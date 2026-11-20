@@ -52,6 +52,11 @@ namespace SupermarketBoost
                                 anim.transform.Find("ELEPHANT_") != null || anim.transform.Find("root/ELEPHANT_") != null;
                 if (!elephant || Vector3.Distance(anim.transform.position, near) > 30f) continue;
 
+                // Its blocking collider is a separate object: remember where the elephant was.
+                var area = new Bounds(anim.transform.position, Vector3.one * 0.5f);
+                foreach (var r in anim.GetComponentsInChildren<Renderer>()) area.Encapsulate(r.bounds);
+                Blocked.Add(area);
+
                 if (anim.GetComponentInParent<Mirror.NetworkIdentity>() != null)
                 {
                     foreach (var c in anim.GetComponentsInChildren<Collider>()) c.enabled = false;
@@ -60,6 +65,32 @@ namespace SupermarketBoost
                 else anim.gameObject.SetActive(false);
                 Plugin.Log.LogInfo($"Removed blocking elephant '{anim.name}' at {anim.transform.position}");
             }
+            ClearInvisibleBarriers();
+        }
+
+        private static readonly System.Collections.Generic.List<Bounds> Blocked = new System.Collections.Generic.List<Bounds>();
+
+        /// <summary>Disable elephant-sized colliders where an elephant stood (not floors or walls).</summary>
+        private static void ClearInvisibleBarriers()
+        {
+            if (Blocked.Count == 0) return;
+            foreach (var area in Blocked)
+            {
+                var grown = area; grown.Expand(0.6f);
+                foreach (var c in Physics.OverlapBox(grown.center, grown.extents, Quaternion.identity, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    if (c == null || !c.enabled) continue;
+                    var b = c.bounds;
+                    bool structural = b.size.x > Mathf.Max(4f, area.size.x * 1.6f) || b.size.z > Mathf.Max(4f, area.size.z * 1.6f) ||
+                                      b.size.y > Mathf.Max(4f, area.size.y * 1.6f) || b.size.y < 0.05f;
+                    if (structural) continue;
+                    if (c.GetComponentInParent<PlayerNetwork>() != null || c.GetComponentInParent<NPC_Info>() != null) continue;
+                    if (!grown.Contains(b.center)) continue;
+                    c.enabled = false;
+                    Plugin.Log.LogInfo($"Removed invisible barrier '{c.name}' ({b.size}) at {b.center}");
+                }
+            }
+            Blocked.Clear();
         }
 
         private static float _nextBlockerCheck;

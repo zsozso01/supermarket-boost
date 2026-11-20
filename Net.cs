@@ -175,7 +175,10 @@ namespace SupermarketBoost
             int hits = (now - h.last > 30f ? 0 : h.hits) + 1;
             Hits[key] = (hits, now);
 
-            if (hits < Plugin.ShotsToKnockOut.Value || !CanKnockOut(npc)) return false;
+            bool eligible = CanKnockOut(npc);
+            Plugin.Log.LogInfo($"Shot {npc.name}: hit {hits}/{Plugin.ShotsToKnockOut.Value}, can stay down={eligible} " +
+                               $"(customer={npc.isCustomer} thief={npc.isAThief} state={npc.state} toBuy={npc.productsIDToBuy.Count} selfCheckout={npc.selfcheckoutAssigned})");
+            if (hits < Plugin.ShotsToKnockOut.Value || !eligible) return false;
             KnockOutOnServer(npc);
             return true;
         }
@@ -186,10 +189,12 @@ namespace SupermarketBoost
         /// </summary>
         private static bool CanKnockOut(NPC_Info npc)
         {
-            if (npc.isEmployee || !npc.isCustomer) return false;
-            if (npc.selfcheckoutAssigned) return false;
+            if (npc.isEmployee) return false;
             if (npc.isAThief) return true;
-            return npc.productsIDToBuy.Count > 0 || npc.state == 99;
+            if (npc.selfcheckoutAssigned) return false;
+            // Shoppers still collecting items, and anyone walking out. Customers who have finished
+            // shopping are heading to / standing in a checkout line: removing them could jam a till.
+            return npc.productsIDToBuy.Count > 0 || npc.state == 99 || npc.state == -1;
         }
 
         private static void KnockOutOnServer(NPC_Info npc)
@@ -203,7 +208,13 @@ namespace SupermarketBoost
                     npc.AuxiliarAnimationPlay(0);
             }
             finally { _suppressBroomHook = false; }
+            // Cancel the game's pending timers (e.g. a thief's "flee in 2 s" step) and freeze the AI.
+            npc.StopCoroutinesFromManager();
+            npc.StopAllCoroutines();
             npc.state = -1; // the game's customer AI skips NPCs in state -1
+            var agent = npc.GetComponent<UnityEngine.AI.NavMeshAgent>();
+            if (agent != null && agent.isOnNavMesh) { agent.ResetPath(); agent.isStopped = true; agent.velocity = Vector3.zero; }
+            Plugin.Log.LogInfo($"Knocked out {npc.name} (thief={npc.isAThief})");
             Plugin.Instance.StartCoroutine(RemoveBody(npc.gameObject));
         }
 

@@ -166,6 +166,22 @@ namespace SupermarketBoost
             if (l && li) { l.SetPositionAndRotation(li.position, li.rotation); if (lc) lc.weight = 1f; }
         }
 
+        // PlayerNetwork.Update prints "Equipped item error" every frame for items it doesn't know.
+        [HarmonyTranspiler, HarmonyPatch(typeof(PlayerNetwork), "Update")]
+        private static IEnumerable<CodeInstruction> QuietUpdate(IEnumerable<CodeInstruction> code)
+        {
+            var print = AccessTools.Method(typeof(MonoBehaviour), nameof(MonoBehaviour.print));
+            var quiet = AccessTools.Method(typeof(PistolItem), nameof(QuietPrint));
+            foreach (var ins in code)
+                yield return ins.Calls(print) ? new CodeInstruction(System.Reflection.Emit.OpCodes.Call, quiet).MoveLabelsFrom(ins) : ins;
+        }
+
+        public static void QuietPrint(object message)
+        {
+            if (message is string s && s.StartsWith("Equipped item error") && Index >= 0) return;
+            Debug.Log(message);
+        }
+
         // The game answers the action button with "Need a broom for this" (message14) on thieves; not with a gun.
         [HarmonyPrefix, HarmonyPatch(typeof(GameCanvas), nameof(GameCanvas.CreateCanvasNotification))]
         private static bool NoBroomNag(string hash) => !(hash == "message14" && Holds(GameHelpers.LocalPlayer));

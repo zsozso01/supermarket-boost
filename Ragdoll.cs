@@ -6,6 +6,7 @@ using HarmonyLib;
 using StarterAssets;
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.Animations.Rigging;
 using UnityEngine.Rendering;
 
 namespace SupermarketBoost
@@ -54,6 +55,7 @@ namespace SupermarketBoost
         private ShadowCastingMode[] _skinModes;
         private float _agentSpeed;
         private Camera _cam;
+        private Vector3 _pinnedRoot;
 
         private const float BlendTime = 0.6f;
 
@@ -344,12 +346,9 @@ namespace SupermarketBoost
             if (_anim) _anim.enabled = false;
             foreach (var s in _skins) if (s) s.updateWhenOffscreen = true;
             foreach (var c in _cols) c.enabled = true;
-            foreach (var rb in _bodies)
-            {
-                rb.isKinematic = false;
-                rb.velocity = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
-            }
+            foreach (var rb in _bodies) rb.isKinematic = false;
+            foreach (var rb in _bodies) { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; }
+            _pinnedRoot = transform.position;
 
             if (_npc != null && _npc.isServer)
             {
@@ -407,8 +406,14 @@ namespace SupermarketBoost
             if (_state != State.Down) return;
             foreach (var rb in _bodies)
             {
-                if (rb.velocity.sqrMagnitude > 15f * 15f) rb.velocity = rb.velocity.normalized * 15f;
+                if (!rb.isKinematic && rb.velocity.sqrMagnitude > 15f * 15f) rb.velocity = rb.velocity.normalized * 15f;
                 if (!_ko && (rb.position - transform.position).sqrMagnitude > 6f * 6f) { Recover(); return; }
+            }
+            if (_npc != null && _npc.isServer && (transform.position - _pinnedRoot).sqrMagnitude > 0.0025f)
+            {
+                var agent = GetComponent<NavMeshAgent>();
+                if (agent != null && agent.isOnNavMesh) { agent.Warp(_pinnedRoot); agent.isStopped = true; }
+                else transform.position = _pinnedRoot;
             }
             if (_ko) return;
             float now = Time.time;
@@ -427,7 +432,12 @@ namespace SupermarketBoost
 
             foreach (var rb in _bodies) rb.isKinematic = true;
             foreach (var c in _cols) c.enabled = false;
-            if (_anim) _anim.enabled = true;
+            if (_anim)
+            {
+                _anim.enabled = true;
+                // The hand-IK rig (players, staff) loses its graph when the Animator is disabled: rebuild it.
+                foreach (var rig in _anim.GetComponentsInChildren<RigBuilder>(true)) { try { rig.Build(); } catch { } }
+            }
 
             if (_npc != null && _npc.isServer)
             {

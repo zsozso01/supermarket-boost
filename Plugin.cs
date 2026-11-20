@@ -21,7 +21,7 @@ namespace SupermarketBoost
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "codescrambler.supermarkettogether.boost";
-        public const string Version = "1.5.0"; // keep in sync with <Version> in the .csproj
+        public const string Version = "1.6.0"; // keep in sync with <Version> in the .csproj
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
@@ -53,6 +53,8 @@ namespace SupermarketBoost
         internal static ConfigEntry<int> MagSize;
         internal static ConfigEntry<int> ReserveAmmo;
         internal static ConfigEntry<bool> InfiniteReserve;
+        internal static ConfigEntry<float> ThiefChanceMultiplier;
+        internal static ConfigEntry<int> ConfigVersion;
         internal static ConfigEntry<KeyboardShortcut> ReloadKey;
         internal static ConfigEntry<int> ShotsToKnockOut;
         internal static ConfigEntry<float> KnockOutBodySeconds;
@@ -81,14 +83,16 @@ namespace SupermarketBoost
                 "Save-folder copies kept in 'LocalLow/DDTNL/Supermarket Together Backups (SupermarketBoost)'. One is made at every game start and before every save.");
             SaveBackup.Init(); // first thing, before anything can touch a save
 
-            CapMultiplier = Config.Bind("Customers", "CapMultiplier", 2.0f,
+            CapMultiplier = Config.Bind("Customers", "CapMultiplier", 1.4f,
                 "Multiplies the max number of customers in the store at once (1.0 = game default).");
             ExtraCustomers = Config.Bind("Customers", "ExtraCustomers", 0,
                 "Flat number of extra customers added to the cap after the multiplier.");
             HardCap = Config.Bind("Customers", "HardCap", 120,
                 "Upper limit for the customer cap, to keep performance sane.");
-            SpawnDelayMultiplier = Config.Bind("Customers", "SpawnDelayMultiplier", 0.5f,
+            SpawnDelayMultiplier = Config.Bind("Customers", "SpawnDelayMultiplier", 0.75f,
                 "Multiplies the wait between customer arrivals (0.5 = twice as often, 1.0 = game default).");
+            ThiefChanceMultiplier = Config.Bind("Customers", "ThiefChanceMultiplier", 0.4f,
+                "Share of would-be thieves that actually steal (1.0 = game default, 0 = no thieves).");
 
             DisableBreakdowns = Config.Bind("Breakdowns", "DisableBreakdowns", false,
                 "true = machines never break down.");
@@ -123,9 +127,9 @@ namespace SupermarketBoost
 
             MagSize = Config.Bind("Pistol", "MagazineSize", 15, "Rounds per magazine.");
             ReserveAmmo = Config.Bind("Pistol", "ReserveAmmo", 60, "Spare rounds; refilled every morning when the store opens.");
-            InfiniteReserve = Config.Bind("Pistol", "InfiniteReserve", false, "true = never run out of spare magazines.");
+            InfiniteReserve = Config.Bind("Pistol", "UnlimitedSpareAmmo", true, "true = never run out of spare magazines (you still reload).");
             ReloadKey = Config.Bind("Pistol", "ReloadHotkey", new KeyboardShortcut(KeyCode.R), "Reload.");
-            ShotsToKnockOut = Config.Bind("Pistol", "ShotsToKnockOut", 3,
+            ShotsToKnockOut = Config.Bind("Pistol", "ShotsToKnockOut", 2,
                 "Shots (within 30 s) that keep a shopper or thief down for good. Staff and customers in a checkout line always get up.");
             KnockOutBodySeconds = Config.Bind("Pistol", "KnockedOutBodySeconds", 30f, "How long a knocked-out body stays before it is cleared.");
             Ragdolls = Config.Bind("Ragdolls", "Enabled", true, "Shot (and broomed) people go ragdoll.");
@@ -142,6 +146,16 @@ namespace SupermarketBoost
 
             AutoUpdate = Config.Bind("Updates", "AutoUpdate", true,
                 "Downloads new versions from GitHub on start; they apply at the next launch.");
+
+            // Older versions wrote other defaults into the config file; move untouched values to the new ones.
+            ConfigVersion = Config.Bind("Internal", "ConfigVersion", 0, "Do not edit.");
+            if (ConfigVersion.Value < 2)
+            {
+                if (Mathf.Approximately(CapMultiplier.Value, 2f)) CapMultiplier.Value = 1.4f;
+                if (Mathf.Approximately(SpawnDelayMultiplier.Value, 0.5f)) SpawnDelayMultiplier.Value = 0.75f;
+                if (ShotsToKnockOut.Value == 3) ShotsToKnockOut.Value = 2;
+                ConfigVersion.Value = 2;
+            }
 
             Pistol.Init();
             new Harmony(Guid).PatchAll();
@@ -231,12 +245,12 @@ namespace SupermarketBoost
     {
         private static readonly FieldInfo SecondsField = AccessTools.Field(typeof(WaitForSeconds), "m_Seconds");
 
-        private static void Postfix(ref IEnumerator __result)
+        private static void Postfix(NPC_Manager __instance, ref IEnumerator __result)
         {
-            __result = Wrap(__result);
+            __result = Wrap(__result, __instance);
         }
 
-        private static IEnumerator Wrap(IEnumerator inner)
+        private static IEnumerator Wrap(IEnumerator inner, NPC_Manager mgr)
         {
             while (inner.MoveNext())
             {
@@ -250,6 +264,14 @@ namespace SupermarketBoost
                 {
                     yield return current;
                 }
+            }
+
+            // The customer just spawned is the last child. Fewer of them turn out to be thieves.
+            var parent = mgr != null ? mgr.customersnpcParentOBJ : null;
+            if (parent != null && parent.transform.childCount > 0)
+            {
+                var npc = parent.transform.GetChild(parent.transform.childCount - 1).GetComponent<NPC_Info>();
+                if (npc != null && npc.isAThief && Random.value > Plugin.ThiefChanceMultiplier.Value) npc.isAThief = false;
             }
         }
     }

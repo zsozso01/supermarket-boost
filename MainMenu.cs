@@ -23,12 +23,14 @@ namespace SupermarketBoost
         private static bool _autoContinueDone;
         private static float _continueLock;
 
-        public static bool InMenu => GameData.Instance == null && !NetworkClient.active && !NetworkServer.active;
+        // The main menu has a store loaded in the background (GameData exists there), so "in the menu"
+        // just means: not hosting and not connected.
+        public static bool InMenu => !NetworkClient.active && !NetworkServer.active && SteamLobby.Instance != null;
 
         public static void Tick(Plugin plugin)
         {
             if (!InMenu) { _continuing = false; return; }
-            if (Time.unscaledTime > _nextScan) { _nextScan = Time.unscaledTime + 3f; ScanSaves(); }
+            if (Time.unscaledTime > _nextScan) { _nextScan = Time.unscaledTime + 3f; ScanSaves(); ScanFriends(); }
 
             // Debug aid for testing without clicking: Continue once automatically.
             if (Plugin.AutoContinueOnce.Value && !_autoContinueDone && _latestSave != null && Time.unscaledTime > 8f)
@@ -54,6 +56,29 @@ namespace SupermarketBoost
             catch (Exception e) { Plugin.Log.LogWarning($"Save scan failed: {e.Message}"); }
         }
 
+        private struct FriendGame { public string Name; public ulong Lobby; }
+        private static readonly System.Collections.Generic.List<FriendGame> Friends = new System.Collections.Generic.List<FriendGame>();
+
+        /// <summary>Friends who are in a Supermarket Together lobby right now (from Steam, no codes).</summary>
+        private static void ScanFriends()
+        {
+            Friends.Clear();
+            if (!SteamManager.Initialized) return;
+            try
+            {
+                var app = Steamworks.SteamUtils.GetAppID();
+                int count = Steamworks.SteamFriends.GetFriendCount(Steamworks.EFriendFlags.k_EFriendFlagImmediate);
+                for (int i = 0; i < count && Friends.Count < 4; i++)
+                {
+                    var id = Steamworks.SteamFriends.GetFriendByIndex(i, Steamworks.EFriendFlags.k_EFriendFlagImmediate);
+                    if (!Steamworks.SteamFriends.GetFriendGamePlayed(id, out var info)) continue;
+                    if (info.m_gameID.AppID() != app || !info.m_steamIDLobby.IsValid()) continue;
+                    Friends.Add(new FriendGame { Name = Steamworks.SteamFriends.GetFriendPersonaName(id), Lobby = info.m_steamIDLobby.m_SteamID });
+                }
+            }
+            catch (Exception e) { Plugin.Log.LogWarning($"Friend scan failed: {e.Message}"); }
+        }
+
         public static string Continue()
         {
             if (_continuing || Time.unscaledTime < _continueLock) return null;
@@ -71,10 +96,13 @@ namespace SupermarketBoost
             return "Loading your store - friends can join from Steam";
         }
 
+        private static bool _loggedDraw;
+
         public static void OnGUI()
         {
             if (!InMenu) return;
             Init();
+            if (!_loggedDraw) { _loggedDraw = true; Plugin.Log.LogInfo($"Main menu panel shown ({Screen.width}x{Screen.height}, save={_latestSave})"); }
 
             // Lay out at 1080p and scale to the real resolution, so it fits on any screen.
             float scale = Screen.height / 1080f;
@@ -88,10 +116,25 @@ namespace SupermarketBoost
             GUI.Label(new Rect(badge.x + 14, badge.y + 8, w - 28, 28), title, _badge);
             GUI.Label(new Rect(badge.x + 14, badge.y + 36, w - 28, 22), Updater.Status, _small);
 
+            float y = bottom - 64f - 12f;
+            foreach (var f in Friends)
+            {
+                var fr = new Rect(x, y - 52f, w, 52f);
+                if (GUI.Button(fr, "", _button) && !_continuing)
+                {
+                    _continuing = true;
+                    _continueLock = Time.unscaledTime + 20f;
+                    Plugin.Log.LogInfo($"Joining {f.Name}'s lobby {f.Lobby} from the main menu");
+                    SteamLobby.Instance.JoinLobby(new Steamworks.CSteamID(f.Lobby));
+                }
+                GUI.Label(new Rect(fr.x + 16, fr.y + 12, w - 32, 30), $"JOIN  {f.Name}'s store", _badge);
+                y -= 52f + 8f;
+            }
+
             if (_latestSave != null)
             {
-                var r = new Rect(x, bottom - 64f - 12f - 72f, w, 72f);
-                if (GUI.Button(r, "", _button)) Continue();
+                var r = new Rect(x, y - 72f, w, 72f);
+                if (GUI.Button(r, "", _button)) Plugin.Instance?.Toast(Continue());
                 GUI.Label(new Rect(r.x + 16, r.y + 10, w - 32, 30), _continuing ? "Loading..." : "CONTINUE  (friends can join)", _badge);
                 GUI.Label(new Rect(r.x + 16, r.y + 42, w - 32, 22),
                     $"{Path.GetFileNameWithoutExtension(_latestSave)}  -  last played {_latestTime:MMM d, HH:mm}", _small);
