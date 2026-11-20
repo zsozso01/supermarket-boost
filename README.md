@@ -8,7 +8,7 @@ A BepInEx mod for **Supermarket Together** that makes co-op days busier and sill
 - **Fewer breakdowns**: machines break about 3× less often (or never, if you want).
 - **Game speed**: a button in the office (or F6) runs the whole store at ×2 or ×4 while players keep walking at normal speed.
 - **Cosmetics room**: a button in the office (or F8) takes you to the skins & hats room and back.
-- **Pistol**: G with empty hands. Thieves drop their loot, customers ragdoll and get back up, friends get knocked back. Synced for everyone.
+- **Pistol**: a real held item (G), shoot with the action button, R to reload, 15-round magazine with spare ammo every morning. Per-limb ragdolls for shot and broomed people, 3 shots keep a shopper or thief down, shoot your friends to ragdoll them, blood. Synced for everyone.
 - **Continue button**: the main menu loads your latest store as a friends-only Steam lobby. Friends join with Steam's *Join Game* or an invite (F7), with no codes needed.
 - **Save backups**: your save folder is copied before installing, at every game start and before every save.
 - **Auto-updates**: new versions download by themselves and apply on the next start.

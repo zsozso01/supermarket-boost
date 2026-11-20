@@ -21,9 +21,9 @@ namespace SupermarketBoost
         private static float _nextScan;
         private static bool _continuing;
         private static bool _autoContinueDone;
+        private static float _continueLock;
 
-        public static bool InMenu =>
-            GameData.Instance == null && !NetworkClient.active && !NetworkServer.active && SteamLobby.Instance != null;
+        public static bool InMenu => GameData.Instance == null && !NetworkClient.active && !NetworkServer.active;
 
         public static void Tick(Plugin plugin)
         {
@@ -56,11 +56,12 @@ namespace SupermarketBoost
 
         public static string Continue()
         {
-            if (_continuing) return null;
+            if (_continuing || Time.unscaledTime < _continueLock) return null;
             if (_latestSave == null) return "No saved store found";
             if (SteamLobby.Instance == null) return "Steam is not ready yet";
 
             _continuing = true;
+            _continueLock = Time.unscaledTime + 20f; // never start two lobbies
             var globals = FsmVariables.GlobalVariables;
             globals.GetFsmString("CurrentFilename").Value = _latestSave;
             globals.GetFsmBool("LoadingFromAutosave").Value = false;
@@ -75,21 +76,27 @@ namespace SupermarketBoost
             if (!InMenu) return;
             Init();
 
-            // Badge (bottom-left).
-            var badge = new Rect(16, Screen.height - 74, 360, 58);
-            GUI.DrawTexture(badge, _bg);
-            GUI.Label(new Rect(badge.x + 12, badge.y + 6, badge.width, 26), $"Supermarket Boost v{Plugin.Version}  ✓ mods loaded", _badge);
-            GUI.Label(new Rect(badge.x + 12, badge.y + 32, badge.width, 20), Updater.Status, _small);
+            // Lay out at 1080p and scale to the real resolution, so it fits on any screen.
+            float scale = Screen.height / 1080f;
+            var oldMatrix = GUI.matrix;
+            GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
+            float w = 430f, x = 28f, bottom = 1080f - 28f;
 
-            // Continue (bottom-left, above badge).
+            string title = $"Supermarket Boost v{Plugin.Version}  -  mods loaded";
+            var badge = new Rect(x, bottom - 64f, w, 64f);
+            GUI.DrawTexture(badge, _bg);
+            GUI.Label(new Rect(badge.x + 14, badge.y + 8, w - 28, 28), title, _badge);
+            GUI.Label(new Rect(badge.x + 14, badge.y + 36, w - 28, 22), Updater.Status, _small);
+
             if (_latestSave != null)
             {
-                var r = new Rect(16, Screen.height - 150, 360, 66);
+                var r = new Rect(x, bottom - 64f - 12f - 72f, w, 72f);
                 if (GUI.Button(r, "", _button)) Continue();
-                GUI.Label(new Rect(r.x + 14, r.y + 8, r.width, 28), _continuing ? "Loading..." : "▶  CONTINUE (friends can join)", _badge);
-                GUI.Label(new Rect(r.x + 14, r.y + 38, r.width, 20),
-                    $"{Path.GetFileNameWithoutExtension(_latestSave)} · last played {_latestTime:MMM d, HH:mm}", _small);
+                GUI.Label(new Rect(r.x + 16, r.y + 10, w - 32, 30), _continuing ? "Loading..." : "CONTINUE  (friends can join)", _badge);
+                GUI.Label(new Rect(r.x + 16, r.y + 42, w - 32, 22),
+                    $"{Path.GetFileNameWithoutExtension(_latestSave)}  -  last played {_latestTime:MMM d, HH:mm}", _small);
             }
+            GUI.matrix = oldMatrix;
         }
 
         private static void Init()
@@ -105,9 +112,9 @@ namespace SupermarketBoost
             normal.SetPixel(0, 0, new Color(0.05f, 0.3f, 0.3f, 0.92f));
             normal.Apply();
 
-            _badge = new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold };
+            _badge = new GUIStyle(GUI.skin.label) { fontSize = 20, fontStyle = FontStyle.Bold, clipping = TextClipping.Clip };
             _badge.normal.textColor = new Color(0.18f, 0.83f, 0.75f);
-            _small = new GUIStyle(GUI.skin.label) { fontSize = 13 };
+            _small = new GUIStyle(GUI.skin.label) { fontSize = 15, clipping = TextClipping.Clip };
             _small.normal.textColor = new Color(0.8f, 0.85f, 0.9f);
             _button = new GUIStyle(GUI.skin.button);
             _button.normal.background = normal;

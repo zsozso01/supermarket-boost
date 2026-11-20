@@ -3,27 +3,32 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using HarmonyLib;
+using StarterAssets;
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.Rendering;
 
 namespace SupermarketBoost
 {
     /// <summary>
-    /// Per-limb runtime ragdoll for NPCs, built from the skeleton the first time an NPC is shot.
-    /// Bones are found through Unity's humanoid mapping when available, otherwise by bone names
-    /// (Mixamo, Unity, Blender, 3ds Max naming all work).
+    /// Per-limb runtime ragdoll for NPCs and players, built from the skeleton the first time they are hit.
+    /// Bones come from Unity's humanoid map when available, otherwise from bone names (the game uses
+    /// 3ds Max "Bip01" rigs; Mixamo / Unity / Blender naming also work).
     ///
     /// Anti-glitch rules:
-    ///  - The NPC's network root never moves while ragdolled: the host only stops its NavMeshAgent.
-    ///    The limbs are simulated locally on every client (cosmetic only).
-    ///  - On recovery the host warps the agent to where its ragdoll landed and resumes its path;
-    ///    every client blends the limbs back to the animated pose over 0.6 s in world space.
-    ///  - Ragdoll colliders exist only while ragdolled and ignore the NPC's own colliders.
-    ///  - The Animator keeps its state while disabled, so the NPC carries on where it left off.
+    ///  - The network root never moves while down. NPCs: the host stops the NavMeshAgent. Local player:
+    ///    input is frozen and a temporary camera follows the body. Limbs are simulated locally on every
+    ///    client (cosmetic only).
+    ///  - Limbs of one body never collide with each other (overlapping capsules would launch the body),
+    ///    speeds are capped, and a body more than 6 m from its root gets up immediately.
+    ///  - Getting up: the host warps the NPC (or the player moves themself) to where the body landed, every
+    ///    bone is reset to its bind pose each frame so the Animator's un-keyed channels can't keep ragdoll
+    ///    offsets (that was the floating), and the pose blends back over 0.6 s.
+    ///  - Knocked-out NPCs stay down until the host removes them.
     /// </summary>
     internal class Ragdoll : MonoBehaviour
     {
-        private enum State { Idle, Ragdolled, Blending }
+        private enum State { Idle, Down, Blending }
         private enum Role { Hips, Spine, Head, UpperLeg, LowerLeg, Foot, UpperArm, LowerArm, Hand }
 
         private static readonly AccessTools.FieldRef<NPC_Info, Animator> AnimRef =
@@ -33,37 +38,53 @@ namespace SupermarketBoost
         private static bool _loggedRig;
 
         private NPC_Info _npc;
+        private PlayerNetwork _player;
         private Animator _anim;
         private GameObject _char;
-        private bool _built, _perLimb;
+        private bool _built, _perLimb, _ko;
         private State _state;
         private float _until, _hardUntil, _blendT;
 
-        private readonly List<Transform> _bones = new List<Transform>();   // parent-first; [0] = hips / model
+        private readonly List<Transform> _bones = new List<Transform>();   // parent-first; [0] = pelvis / model
         private readonly List<Rigidbody> _bodies = new List<Rigidbody>();
         private readonly List<Collider> _cols = new List<Collider>();
+        private Vector3[] _bindPos, _fromPos;
+        private Quaternion[] _bindRot, _fromRot;
         private SkinnedMeshRenderer[] _skins;
-        private Vector3[] _fromPos;
-        private Quaternion[] _fromRot;
+        private ShadowCastingMode[] _skinModes;
         private float _agentSpeed;
+        private Camera _cam;
 
         private const float BlendTime = 0.6f;
 
-        public static Ragdoll For(NPC_Info npc)
+        public bool IsDown => _state == State.Down;
+        public bool KnockedOut => _ko;
+        public Transform Pelvis => _bones.Count > 0 ? _bones[0] : null;
+
+        public static Ragdoll For(GameObject root)
         {
-            var r = npc.GetComponent<Ragdoll>();
-            if (r == null) { r = npc.gameObject.AddComponent<Ragdoll>(); r._npc = npc; }
+            var r = root.GetComponent<Ragdoll>();
+            if (r == null)
+            {
+                r = root.AddComponent<Ragdoll>();
+                r._npc = root.GetComponent<NPC_Info>();
+                r._player = root.GetComponent<PlayerNetwork>();
+            }
             return r;
         }
 
-        public void Hit(Vector3 point, Vector3 dir)
+        /// <param name="forceScale">1 = gun, smaller for the broom.</param>
+        /// <param name="knockOut">Stay down for good (host decides).</param>
+        public void Hit(Vector3 point, Vector3 dir, float forceScale, bool knockOut)
         {
             if (!_built && !Build()) return;
-            if (_state != State.Ragdolled) Begin();
+            if (_state != State.Down) Begin();
+            if (knockOut) _ko = true;
 
             float now = Time.time;
-            _until = now + Plugin.RagdollSeconds.Value;
-            _hardUntil = now + Plugin.RagdollSeconds.Value + 4f;
+            float stay = _player != null ? Plugin.PlayerRagdollSeconds.Value : Plugin.RagdollSeconds.Value;
+            _until = Mathf.Max(_until, now + stay);
+            _hardUntil = _until + 4f;
 
             Rigidbody nearest = _bodies[0];
             float best = float.MaxValue;
@@ -72,7 +93,7 @@ namespace SupermarketBoost
                 float d = (rb.worldCenterOfMass - point).sqrMagnitude;
                 if (d < best) { best = d; nearest = rb; }
             }
-            float force = Plugin.RagdollForce.Value;
+            float force = Plugin.RagdollForce.Value * forceScale;
             nearest.AddForceAtPosition(dir * force * (_perLimb ? 0.6f : 1f), point, ForceMode.Impulse);
             _bodies[0].AddForce((dir * 0.5f + Vector3.up * 0.3f) * force, ForceMode.Impulse);
         }
@@ -82,11 +103,17 @@ namespace SupermarketBoost
         private bool Build()
         {
             _built = true;
-            _anim = AnimRef(_npc);
-            _char = CharRef(_npc);
+            if (_npc != null) { _anim = AnimRef(_npc); _char = CharRef(_npc); }
+            else if (_player != null)
+            {
+                var sync = _player.GetComponent<PlayerSyncCharacter>();
+                _char = sync != null ? sync.characterOBJ : null;
+                _anim = _char != null ? _char.GetComponent<Animator>() : null;
+            }
             if (_char == null) return false;
             if (_anim != null) _anim.keepAnimatorStateOnDisable = true;
             _skins = _char.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            _skinModes = _skins.Select(s => s.shadowCastingMode).ToArray();
 
             var ignore = new List<Collider>(GetComponentsInChildren<Collider>(true));
             var bones = FindBones(_anim, _char.transform);
@@ -110,7 +137,6 @@ namespace SupermarketBoost
             foreach (var c in _cols)
             {
                 foreach (var other in ignore) if (other != null) Physics.IgnoreCollision(c, other);
-                // Limbs overlap at the joints (torso vs thighs etc.); colliding them launches the body.
                 foreach (var own in _cols) if (own != c) Physics.IgnoreCollision(c, own);
                 c.enabled = false;
             }
@@ -124,17 +150,20 @@ namespace SupermarketBoost
                 rb.angularDrag = 0.3f;
                 rb.maxAngularVelocity = 20f;
             }
-            _fromPos = new Vector3[_bones.Count];
-            _fromRot = new Quaternion[_bones.Count];
+            int n = _bones.Count;
+            _bindPos = _bones.Select(b => b.localPosition).ToArray();
+            _bindRot = _bones.Select(b => b.localRotation).ToArray();
+            _fromPos = new Vector3[n];
+            _fromRot = new Quaternion[n];
             return true;
         }
 
-        private static Dictionary<(Role, int), Transform> FindBones(Animator _anim, Transform root)
+        private static Dictionary<(Role, int), Transform> FindBones(Animator anim, Transform root)
         {
             var map = new Dictionary<(Role, int), Transform>();
-            if (_anim != null && _anim.isHuman)
+            if (anim != null && anim.isHuman)
             {
-                void H(Role r, int side, HumanBodyBones b) { var t = _anim.GetBoneTransform(b); if (t) map[(r, side)] = t; }
+                void H(Role r, int side, HumanBodyBones b) { var t = anim.GetBoneTransform(b); if (t) map[(r, side)] = t; }
                 H(Role.Hips, 0, HumanBodyBones.Hips);
                 H(Role.Spine, 0, HumanBodyBones.Spine);
                 H(Role.Head, 0, HumanBodyBones.Head);
@@ -148,7 +177,6 @@ namespace SupermarketBoost
                 map.Clear();
             }
 
-            // Name-based: pick the shallowest bone for each role/side.
             var depth = new Dictionary<(Role, int), int>();
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
             {
@@ -195,7 +223,6 @@ namespace SupermarketBoost
             Transform G(Role r, int s = 0) => m.TryGetValue((r, s), out var t) ? t : null;
             var hips = G(Role.Hips); var spine = G(Role.Spine); var head = G(Role.Head);
             var lul = G(Role.UpperLeg, -1); var rul = G(Role.UpperLeg, 1);
-            var lll = G(Role.LowerLeg, -1); var rll = G(Role.LowerLeg, 1);
             float width = Mathf.Max(0.12f, Vector3.Distance(lul.position, rul.position));
 
             var hipsRb = AddBody(hips, null, 12f, () =>
@@ -222,7 +249,7 @@ namespace SupermarketBoost
                 var ul = G(Role.UpperLeg, s); var ll = G(Role.LowerLeg, s);
                 var foot = G(Role.Foot, s) ?? ChildToward(ll);
                 var ulRb = AddCapsuleBody(ul, ll, hipsRb, 6f, width * 0.9f, 1f, twist: 15f, swing: 50f);
-                if (foot != null) AddCapsuleBody(ll, foot, ulRb, 4f, width * 0.7f, 1.12f, twist: 5f, swing: 70f, hinge: true);
+                if (foot != null) AddCapsuleBody(ll, foot, ulRb, 4f, width * 0.7f, 1.12f, twist: 10f, swing: 70f, hinge: true);
 
                 var ua = G(Role.UpperArm, s); var la = G(Role.LowerArm, s); var hand = G(Role.Hand, s);
                 if (ua != null && la != null)
@@ -266,7 +293,6 @@ namespace SupermarketBoost
                 j.connectedBody = parent;
                 j.enableProjection = true;
                 j.projectionDistance = 0.05f;
-                // Knees/elbows: little twist, wide bend in one swing axis, small in the other.
                 j.lowTwistLimit = new SoftJointLimit { limit = -twist };
                 j.highTwistLimit = new SoftJointLimit { limit = twist };
                 j.swing1Limit = new SoftJointLimit { limit = swing };
@@ -301,44 +327,20 @@ namespace SupermarketBoost
             _bones.Clear(); _bodies.Clear(); _cols.Clear();
         }
 
-        /// <summary>Diagnostics: report how a character prefab's skeleton maps to ragdoll limbs.</summary>
-        public static void DescribePrefab(GameObject prefab)
-        {
-            var anim = prefab.GetComponentInChildren<Animator>(true);
-            var bones = FindBones(anim, prefab.transform);
-            var sb = new StringBuilder($"Rig check '{prefab.name}': human={(anim && anim.isHuman)} mapped={bones.Count}: ");
-            foreach (var kv in bones) sb.Append($"{kv.Key.Item1}{(kv.Key.Item2 < 0 ? "L" : kv.Key.Item2 > 0 ? "R" : "")}={kv.Value.name} ");
-            Plugin.Log.LogInfo(sb.ToString());
-            if (bones.Count < 7)
-            {
-                var names = new StringBuilder("  bones: ");
-                int n = 0;
-                foreach (var t in prefab.GetComponentsInChildren<Transform>(true)) { if (n++ > 70) break; names.Append(t.name).Append(", "); }
-                Plugin.Log.LogInfo(names.ToString());
-            }
-        }
-
         private void LogRig(Dictionary<(Role, int), Transform> bones)
         {
-            var sb = new StringBuilder();
-            sb.AppendLine($"Ragdoll rig: animator={(_anim ? _anim.name : "none")} human={(_anim && _anim.isHuman)}");
-            foreach (var kv in bones) sb.AppendLine($"  {kv.Key.Item1} {kv.Key.Item2}: {kv.Value.name}");
-            int lines = 0;
-            void Dump(Transform t, int d)
-            {
-                if (lines++ > 80 || d > 9) return;
-                sb.AppendLine(new string(' ', d * 2 + 2) + t.name);
-                foreach (Transform c in t) Dump(c, d + 1);
-            }
-            Dump(_char.transform, 0);
+            var sb = new StringBuilder($"Ragdoll rig: {(_anim ? _anim.name : "none")} human={(_anim && _anim.isHuman)} mapped={bones.Count}");
+            foreach (var kv in bones) sb.Append($" {kv.Key.Item1}{(kv.Key.Item2 < 0 ? "L" : kv.Key.Item2 > 0 ? "R" : "")}={kv.Value.name}");
             Plugin.Log.LogInfo(sb.ToString());
         }
 
         // ---------- runtime ----------
 
+        private bool IsLocalPlayer => _player != null && _player.isLocalPlayer;
+
         private void Begin()
         {
-            _state = State.Ragdolled;
+            _state = State.Down;
             if (_anim) _anim.enabled = false;
             foreach (var s in _skins) if (s) s.updateWhenOffscreen = true;
             foreach (var c in _cols) c.enabled = true;
@@ -349,7 +351,7 @@ namespace SupermarketBoost
                 rb.angularVelocity = Vector3.zero;
             }
 
-            if (_npc.isServer)
+            if (_npc != null && _npc.isServer)
             {
                 var agent = GetComponent<NavMeshAgent>();
                 if (agent != null && agent.isOnNavMesh)
@@ -359,17 +361,57 @@ namespace SupermarketBoost
                     agent.velocity = Vector3.zero;
                 }
             }
+
+            if (IsLocalPlayer) StartLocalView();
+        }
+
+        // You can't see your own body in first person: show it and watch it from a follow camera.
+        private void StartLocalView()
+        {
+            var fpc = FirstPersonController.Instance;
+            if (fpc != null) fpc.inEvent = true;
+            foreach (var s in _skins) if (s) s.shadowCastingMode = ShadowCastingMode.On;
+            var main = Camera.main;
+            if (main == null) return;
+            var go = new GameObject("SupermarketBoost_RagdollCam");
+            _cam = go.AddComponent<Camera>();
+            _cam.CopyFrom(main);
+            _cam.cullingMask = ~0 & ~(1 << 5); // everything except UI
+            _cam.depth = main.depth + 5;
+            _cam.transform.SetPositionAndRotation(main.transform.position, main.transform.rotation);
+        }
+
+        private void StopLocalView()
+        {
+            var fpc = FirstPersonController.Instance;
+            if (fpc != null)
+            {
+                // Stand up where the body landed.
+                Vector3 to = _bones[0].position + Vector3.up * 0.5f;
+                if (Physics.Raycast(to, Vector3.down, out var hit, 3f, ~0, QueryTriggerInteraction.Ignore) &&
+                    Mathf.Abs(hit.point.y - transform.position.y) < 1f)
+                {
+                    var cc = fpc.GetComponent<CharacterController>();
+                    if (cc != null) cc.enabled = false;
+                    fpc.transform.position = hit.point + Vector3.up * 0.05f;
+                    if (cc != null) cc.enabled = true;
+                }
+                fpc.inEvent = false;
+            }
+            for (int i = 0; i < _skins.Length; i++) if (_skins[i]) _skins[i].shadowCastingMode = _skinModes[i];
+            if (_cam != null) Destroy(_cam.gameObject);
         }
 
         private void FixedUpdate()
         {
-            if (_state != State.Ragdolled) return;
-            float now = Time.time;
+            if (_state != State.Down) return;
             foreach (var rb in _bodies)
             {
                 if (rb.velocity.sqrMagnitude > 15f * 15f) rb.velocity = rb.velocity.normalized * 15f;
-                if ((rb.position - transform.position).sqrMagnitude > 6f * 6f) { Recover(); return; }
+                if (!_ko && (rb.position - transform.position).sqrMagnitude > 6f * 6f) { Recover(); return; }
             }
+            if (_ko) return;
+            float now = Time.time;
             bool settled = _bodies[0].velocity.sqrMagnitude < 0.25f;
             if ((now > _until && settled) || now > _hardUntil) Recover();
         }
@@ -387,7 +429,7 @@ namespace SupermarketBoost
             foreach (var c in _cols) c.enabled = false;
             if (_anim) _anim.enabled = true;
 
-            if (_npc.isServer)
+            if (_npc != null && _npc.isServer)
             {
                 var agent = GetComponent<NavMeshAgent>();
                 if (agent != null)
@@ -405,13 +447,33 @@ namespace SupermarketBoost
                     }
                 }
             }
+            if (IsLocalPlayer) StopLocalView();
 
             _state = State.Blending;
             _blendT = 0f;
         }
 
+        // Before the Animator runs: put every ragdoll bone back to its bind pose, so channels the
+        // animation doesn't key (bone positions on these rigs) can't keep the ragdoll's offsets.
+        private void Update()
+        {
+            if (_state != State.Blending) return;
+            for (int i = 0; i < _bones.Count; i++)
+                _bones[i].SetLocalPositionAndRotation(_bindPos[i], _bindRot[i]);
+        }
+
         private void LateUpdate()
         {
+            if (_cam != null && _state == State.Down)
+            {
+                Vector3 focus = _bones[0].position;
+                Vector3 back = -Camera.main.transform.forward; back.y = 0f;
+                if (back.sqrMagnitude < 0.01f) back = Vector3.back;
+                Vector3 want = focus + back.normalized * 2.4f + Vector3.up * 1.4f;
+                _cam.transform.position = Vector3.Lerp(_cam.transform.position, want, Time.unscaledDeltaTime * 6f);
+                _cam.transform.rotation = Quaternion.LookRotation(focus - _cam.transform.position);
+            }
+
             if (_state != State.Blending) return;
             _blendT += Time.deltaTime / BlendTime;
             float t = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(_blendT));
@@ -419,22 +481,7 @@ namespace SupermarketBoost
             int n = _bones.Count;
             var targetPos = new Vector3[n];
             var targetRot = new Quaternion[n];
-            for (int i = 0; i < n; i++)
-            {
-                if (_perLimb)
-                {
-                    // The Animator has just written this frame's pose: blend toward it.
-                    targetPos[i] = _bones[i].position;
-                    targetRot[i] = _bones[i].rotation;
-                }
-                else
-                {
-                    // Plank: the model's resting pose is identity under the NPC root (upright).
-                    var parent = _bones[i].parent;
-                    targetPos[i] = parent.position;
-                    targetRot[i] = parent.rotation;
-                }
-            }
+            for (int i = 0; i < n; i++) { targetPos[i] = _bones[i].position; targetRot[i] = _bones[i].rotation; }
             for (int i = 0; i < n; i++)
             {
                 if (i == 0) _bones[i].position = Vector3.Lerp(_fromPos[i], targetPos[i], t);
@@ -443,10 +490,16 @@ namespace SupermarketBoost
 
             if (_blendT >= 1f)
             {
-                if (!_perLimb) { _char.transform.localPosition = Vector3.zero; _char.transform.localRotation = Quaternion.identity; }
+                for (int i = 0; i < n; i++) _bones[i].SetLocalPositionAndRotation(_bindPos[i], _bindRot[i]);
                 foreach (var s in _skins) if (s) s.updateWhenOffscreen = false;
                 _state = State.Idle;
             }
+        }
+
+        private void OnDestroy()
+        {
+            if (_cam != null) Destroy(_cam.gameObject);
+            if (IsLocalPlayer && FirstPersonController.Instance != null) FirstPersonController.Instance.inEvent = false;
         }
     }
 }

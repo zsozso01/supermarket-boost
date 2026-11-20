@@ -19,10 +19,10 @@ WHAT IT DOES (the HOST's settings count for customers, breakdowns and day speed)
   - COSMETICS ROOM button in the office, or F8: skins & hats room and back.
   - Main menu: CONTINUE loads your latest store as a friends-only Steam lobby.
     Friends join with Steam's "Join Game" or an invite (F7 in game) - no codes.
-  - Pistol: press G with empty hands, shoot with the normal action button.
-    Everyone sees and hears it. Shot customers ragdoll and get back up;
-    thieves also drop their stolen goods. Shot players get knocked back.
-    The broom still works.
+  - Pistol: press G with empty hands (a real held item everyone sees), shoot with the
+    normal action button, R to reload. 15-round magazine, spare ammo refills every morning.
+    Shot people ragdoll and get back up; 3 shots keep a shopper or thief down for good
+    (thieves drop their loot). Shoot your friends to ragdoll them. Broom hits ragdoll too.
 
 YOUR SAVES ARE BACKED UP
   Before installing, at every game start and before every save, the save folder is copied to:

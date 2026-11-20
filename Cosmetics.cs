@@ -30,6 +30,7 @@ namespace SupermarketBoost
             if (room == null || room.skinCanvasOBJ == null) return "Cosmetics room not found on this map";
 
             var canvas = room.skinCanvasOBJ.transform;
+            ClearBlockers(canvas.position);
             if (!FindSpot(canvas, out var spot)) return "Could not find a safe spot in the cosmetics room";
 
             _returnPos = fpc.transform.position;
@@ -38,6 +39,42 @@ namespace SupermarketBoost
             Teleport(fpc, spot, look.sqrMagnitude > 0.01f ? Quaternion.LookRotation(look) : fpc.transform.rotation);
             Plugin.Log.LogInfo($"Cosmetics room: canvas {canvas.position}, player to {spot}");
             return $"Cosmetics room! Press {Plugin.CosmeticsKey.Value} or the button again to go back";
+        }
+
+        /// <summary>The cosmetics room has an elephant that blocks the way out: hide it (locally).</summary>
+        public static void ClearBlockers(Vector3 near)
+        {
+            foreach (var anim in Resources.FindObjectsOfTypeAll<Animator>())
+            {
+                if (anim == null || !anim.gameObject.scene.IsValid() || !anim.gameObject.activeInHierarchy) continue;
+                bool elephant = anim.name.IndexOf("elephant", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                (anim.runtimeAnimatorController != null && anim.runtimeAnimatorController.name.IndexOf("Elephant", System.StringComparison.OrdinalIgnoreCase) >= 0) ||
+                                anim.transform.Find("ELEPHANT_") != null || anim.transform.Find("root/ELEPHANT_") != null;
+                if (!elephant || Vector3.Distance(anim.transform.position, near) > 30f) continue;
+
+                if (anim.GetComponentInParent<Mirror.NetworkIdentity>() != null)
+                {
+                    foreach (var c in anim.GetComponentsInChildren<Collider>()) c.enabled = false;
+                    foreach (var r in anim.GetComponentsInChildren<Renderer>()) r.enabled = false;
+                }
+                else anim.gameObject.SetActive(false);
+                Plugin.Log.LogInfo($"Removed blocking elephant '{anim.name}' at {anim.transform.position}");
+            }
+        }
+
+        private static float _nextBlockerCheck;
+
+        /// <summary>Also clear it if someone walks into the room the normal way.</summary>
+        public static void Tick()
+        {
+            if (GameData.Instance == null || Time.unscaledTime < _nextBlockerCheck) return;
+            _nextBlockerCheck = Time.unscaledTime + 3f;
+            var fpc = FirstPersonController.Instance;
+            if (fpc == null) return;
+            foreach (var r in Resources.FindObjectsOfTypeAll<TheCoolRoom>())
+                if (r.gameObject.scene.IsValid() && r.skinCanvasOBJ != null &&
+                    Vector3.Distance(fpc.transform.position, r.skinCanvasOBJ.transform.position) < 20f)
+                    ClearBlockers(r.skinCanvasOBJ.transform.position);
         }
 
         public static bool ProbeSpot(Transform canvas, out Vector3 spot) => FindSpot(canvas, out spot);

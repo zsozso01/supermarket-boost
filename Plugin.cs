@@ -21,9 +21,10 @@ namespace SupermarketBoost
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "codescrambler.supermarkettogether.boost";
-        public const string Version = "1.4.1"; // keep in sync with <Version> in the .csproj
+        public const string Version = "1.5.0"; // keep in sync with <Version> in the .csproj
 
         internal static ManualLogSource Log;
+        internal static Plugin Instance;
 
         internal static ConfigEntry<float> CapMultiplier;
         internal static ConfigEntry<int> ExtraCustomers;
@@ -49,7 +50,17 @@ namespace SupermarketBoost
         internal static ConfigEntry<float> PistolRange;
         internal static ConfigEntry<float> PistolVolume;
 
-        internal static ConfigEntry<float> PlayerKnockback;
+        internal static ConfigEntry<int> MagSize;
+        internal static ConfigEntry<int> ReserveAmmo;
+        internal static ConfigEntry<bool> InfiniteReserve;
+        internal static ConfigEntry<KeyboardShortcut> ReloadKey;
+        internal static ConfigEntry<int> ShotsToKnockOut;
+        internal static ConfigEntry<float> KnockOutBodySeconds;
+        internal static ConfigEntry<bool> BroomRagdolls;
+        internal static ConfigEntry<bool> PlayerRagdolls;
+        internal static ConfigEntry<float> PlayerRagdollSeconds;
+        internal static ConfigEntry<bool> BloodEnabled;
+        internal static ConfigEntry<float> BloodSeconds;
         internal static ConfigEntry<bool> Ragdolls;
         internal static ConfigEntry<float> RagdollSeconds;
         internal static ConfigEntry<float> RagdollForce;
@@ -64,6 +75,7 @@ namespace SupermarketBoost
         private void Awake()
         {
             Log = Logger;
+            Instance = this;
 
             BackupsToKeep = Config.Bind("Saves", "BackupsToKeep", 30,
                 "Save-folder copies kept in 'LocalLow/DDTNL/Supermarket Together Backups (SupermarketBoost)'. One is made at every game start and before every save.");
@@ -109,11 +121,21 @@ namespace SupermarketBoost
             PistolRange = Config.Bind("Pistol", "Range", 40f, "Range in metres.");
             PistolVolume = Config.Bind("Pistol", "Volume", 0.6f, "Gunshot volume (0-1).");
 
-            PlayerKnockback = Config.Bind("Pistol", "PlayerKnockback", 9f,
-                "How hard a shot pushes another player (0 = not at all).");
-            Ragdolls = Config.Bind("Pistol", "Ragdolls", true, "Shot NPCs go ragdoll, then get back up.");
-            RagdollSeconds = Config.Bind("Pistol", "RagdollSeconds", 2.5f, "Minimum time an NPC stays down.");
-            RagdollForce = Config.Bind("Pistol", "RagdollForce", 35f, "How hard bullets push ragdolls.");
+            MagSize = Config.Bind("Pistol", "MagazineSize", 15, "Rounds per magazine.");
+            ReserveAmmo = Config.Bind("Pistol", "ReserveAmmo", 60, "Spare rounds; refilled every morning when the store opens.");
+            InfiniteReserve = Config.Bind("Pistol", "InfiniteReserve", false, "true = never run out of spare magazines.");
+            ReloadKey = Config.Bind("Pistol", "ReloadHotkey", new KeyboardShortcut(KeyCode.R), "Reload.");
+            ShotsToKnockOut = Config.Bind("Pistol", "ShotsToKnockOut", 3,
+                "Shots (within 30 s) that keep a shopper or thief down for good. Staff and customers in a checkout line always get up.");
+            KnockOutBodySeconds = Config.Bind("Pistol", "KnockedOutBodySeconds", 30f, "How long a knocked-out body stays before it is cleared.");
+            Ragdolls = Config.Bind("Ragdolls", "Enabled", true, "Shot (and broomed) people go ragdoll.");
+            BroomRagdolls = Config.Bind("Ragdolls", "BroomRagdolls", true, "Broom hits also ragdoll (gently).");
+            PlayerRagdolls = Config.Bind("Ragdolls", "PlayerRagdolls", true, "Shooting another player ragdolls them.");
+            RagdollSeconds = Config.Bind("Ragdolls", "NpcSeconds", 2.5f, "Minimum time an NPC stays down.");
+            PlayerRagdollSeconds = Config.Bind("Ragdolls", "PlayerSeconds", 2.5f, "Minimum time a shot player stays down.");
+            RagdollForce = Config.Bind("Ragdolls", "Force", 35f, "How hard bullets push ragdolls.");
+            BloodEnabled = Config.Bind("Blood", "Enabled", true, "Blood spray, splats and pools.");
+            BloodSeconds = Config.Bind("Blood", "Seconds", 90f, "How long blood stays on the floor.");
             MultiplayerSync = Config.Bind("Pistol", "MultiplayerSync", true,
                 "Show pistols, shots and ragdolls to other players. Everyone in the lobby needs this mod: " +
                 "a player with the mod who joins a host WITHOUT it gets disconnected. Set false to play with unmodded hosts.");
@@ -121,6 +143,7 @@ namespace SupermarketBoost
             AutoUpdate = Config.Bind("Updates", "AutoUpdate", true,
                 "Downloads new versions from GitHub on start; they apply at the next launch.");
 
+            Pistol.Init();
             new Harmony(Guid).PatchAll();
             Log.LogInfo($"Supermarket Boost v{Version} loaded");
 
@@ -142,12 +165,13 @@ namespace SupermarketBoost
         {
             Net.Tick();
             if (SpeedKey.Value.IsDown()) Toast(DaySpeed.Cycle());
-            if (CosmeticsKey.Value.IsDown() && GameHelpers.InputAllowed) Toast(Cosmetics.Toggle());
+            if (CosmeticsKey.Value.IsDown() && GameData.Instance != null) Toast(Cosmetics.Toggle());
             DaySpeed.Tick(this);
             Pistol.Tick(this);
             MainMenu.Tick(this);
             SteamJoin.Tick(this);
             Diagnostics.Tick();
+            Cosmetics.Tick();
         }
 
         internal void Toast(string msg, float seconds = 2.5f)
@@ -170,17 +194,7 @@ namespace SupermarketBoost
                 text = $"Game speed x{DaySpeed.Speed:0.#}";
             if (text != null) Shadowed(new Rect(20, 20, 900, 40), text, Color.yellow);
 
-            if (Pistol.Drawn && GameHelpers.InputAllowed)
-            {
-                float cx = Screen.width / 2f, cy = Screen.height / 2f;
-                var old = GUI.color;
-                GUI.color = new Color(1f, 1f, 1f, 0.85f);
-                GUI.DrawTexture(new Rect(cx - 9, cy - 1, 6, 2), Texture2D.whiteTexture);
-                GUI.DrawTexture(new Rect(cx + 3, cy - 1, 6, 2), Texture2D.whiteTexture);
-                GUI.DrawTexture(new Rect(cx - 1, cy - 9, 2, 6), Texture2D.whiteTexture);
-                GUI.DrawTexture(new Rect(cx - 1, cy + 3, 2, 6), Texture2D.whiteTexture);
-                GUI.color = old;
-            }
+            Pistol.OnGUI(_style);
         }
 
         private void Shadowed(Rect r, string text, Color c)

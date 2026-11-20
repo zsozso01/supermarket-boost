@@ -14,10 +14,6 @@ namespace SupermarketBoost
             if (Time.unscaledTime - _start < 5f) return;
             Plugin.DiagnosticsOnce.Value = false;
 
-            var m = NPC_Manager.Instance;
-            if (m.NPCsArray != null) foreach (var p in m.NPCsArray) if (p) Ragdoll.DescribePrefab(p);
-            if (m.NPCsEmployeesArray != null && m.NPCsEmployeesArray.Length > 0 && m.NPCsEmployeesArray[0])
-                Ragdoll.DescribePrefab(m.NPCsEmployeesArray[0]);
 
             foreach (var r in Resources.FindObjectsOfTypeAll<TheCoolRoom>())
             {

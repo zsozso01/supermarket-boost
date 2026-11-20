@@ -13,6 +13,7 @@ namespace SupermarketBoost
         public static float Speed = 1f;
         private static int _index;
         private static bool _applied;
+        private static float _lastAnimSpeed = 1f, _nextAnimFix;
 
         private static WallButton _speedBtn, _cosmeticsBtn;
         private static float _nextSearch;
@@ -58,6 +59,16 @@ namespace SupermarketBoost
             {
                 Time.timeScale = 1f;
                 _applied = false;
+            }
+
+            // Player characters animate at normal speed while the store runs faster.
+            float animSpeed = PlayerShouldBeRealtime ? 1f / Time.timeScale : 1f;
+            if (!Mathf.Approximately(animSpeed, _lastAnimSpeed) || (_applied && Time.unscaledTime > _nextAnimFix))
+            {
+                _nextAnimFix = Time.unscaledTime + 1f;
+                _lastAnimSpeed = animSpeed;
+                foreach (var sync in Object.FindObjectsByType<PlayerSyncCharacter>(FindObjectsSortMode.None))
+                    if (sync.characterOBJ != null && sync.characterOBJ.TryGetComponent<Animator>(out var a)) a.speed = animSpeed;
             }
 
             if (Plugin.SpeedButtonEnabled.Value) TickButtons();

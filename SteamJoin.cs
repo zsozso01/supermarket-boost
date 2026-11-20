@@ -13,8 +13,21 @@ namespace SupermarketBoost
     ///    the main menu is ready. The game itself only handled the in-game lobby invite case.
     ///  - F7 in a game opens Steam's invite dialog for your lobby.
     /// </summary>
+    [HarmonyLib.HarmonyPatch]
     internal static class SteamJoin
     {
+        // The game's own invite handler only works from the main menu: if you are already in a store
+        // (even a solo one), it joins the lobby but never connects. Queue it and join from the menu instead.
+        [HarmonyLib.HarmonyPrefix, HarmonyLib.HarmonyPatch(typeof(SteamLobby), "OnJoinRequest")]
+        private static bool OnInviteAccepted(GameLobbyJoinRequested_t callback)
+        {
+            Plugin.Log.LogInfo($"Steam invite accepted for lobby {callback.m_steamIDLobby.m_SteamID} (in menu: {MainMenu.InMenu})");
+            if (MainMenu.InMenu) return true;
+            _pendingLobby = callback.m_steamIDLobby.m_SteamID;
+            Plugin.Instance?.Toast("Invite accepted - save and quit to the main menu, you'll join automatically", 10f);
+            return false;
+        }
+
         private static Callback<GameRichPresenceJoinRequested_t> _rpJoin;
         private static ulong _pendingLobby;
         private static bool _initialized, _presenceSet;
@@ -26,7 +39,7 @@ namespace SupermarketBoost
             if (!_initialized) Init();
 
             // Join a lobby that Steam asked for, as soon as the main menu can take it.
-            if (_pendingLobby != 0 && MainMenu.InMenu && Time.unscaledTime > 6f)
+            if (_pendingLobby != 0 && MainMenu.InMenu && SteamLobby.Instance != null && Time.unscaledTime > 6f)
             {
                 ulong id = _pendingLobby;
                 _pendingLobby = 0;
