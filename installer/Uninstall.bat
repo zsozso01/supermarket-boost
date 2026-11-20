@@ -1,0 +1,2 @@
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Write-Host 'This removes only the Supermarket Boost mod (BepInEx stays; delete winhttp.dll in the game folder to disable all mods).'; $g=Read-Host 'Paste the Supermarket Together game folder path'; $d=Join-Path $g 'BepInEx\plugins\SupermarketBoost'; $u=Join-Path $g 'BepInEx\patchers\SupermarketBoost'; if(Test-Path $u){Remove-Item $u -Recurse -Force}; if(Test-Path $d){Remove-Item $d -Recurse -Force; Write-Host 'Removed.'}else{Write-Host 'Mod not found there.'}; Read-Host 'Press Enter to close'"
