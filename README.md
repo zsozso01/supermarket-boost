@@ -6,10 +6,10 @@ A BepInEx mod for **Supermarket Together** that makes co-op days busier and sill
 
 - **More customers**: about 1.4× as many shoppers, arriving a bit more often, and fewer thieves. Prices and what customers pay are unchanged.
 - **Fewer breakdowns**: machines break about 3× less often (or never, if you want).
-- **Game speed**: a button in the office (or F6) runs the whole store at ×2 or ×4 while players keep walking at normal speed.
+- **Game speed**: a button in the office (or F6) runs the whole store at ×2 or ×4 while players keep walking at normal speed. The current speed shows under the clock.
 - **Cosmetics room**: a button in the office (or F8) takes you to the skins & hats room and back.
-- **Pistol**: a real held item (G), shoot with the action button, R to reload, 15-round magazine, unlimited spare ammo. Per-limb ragdolls for shot and broomed people, 2 shots keep a shopper or thief down, shoot your friends to ragdoll them, blood. Synced for everyone.
-- **Continue button**: the main menu loads your latest store as a friends-only Steam lobby. Friends join with Steam's *Join Game*, an invite (F7) or the *Join <friend>'s store* button in the menu, with no codes needed.
+- **Pistol**: a real held item (G) with a detailed model and a proper two-handed grip, shoot with the action button, R to reload, 15-round magazine, unlimited spare ammo. Per-limb ragdolls for shot and broomed people, 2 shots keep a shopper or thief down, shoot your friends to ragdoll them, blood. Synced for everyone.
+- **Main menu**: a **Continue** entry loads your latest store as a friends-only Steam lobby. Friends join with Steam's *Join Game*, an invite (F7) or the *Join <friend>* entry in the menu, with no codes needed. **Mod Menu** lists every feature, hotkey and setting. The news and ad boxes are hidden (`CleanMainMenu`).
 - **Save backups**: your save folder is copied before installing, at every game start and before every save.
 - **Auto-updates**: new versions download by themselves and apply on the next start.
 

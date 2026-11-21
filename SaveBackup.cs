@@ -25,7 +25,9 @@ namespace SupermarketBoost
                 _saveDir = Application.persistentDataPath;
                 _backupRoot = Path.Combine(Path.GetDirectoryName(_saveDir) ?? _saveDir,
                     Path.GetFileName(_saveDir) + " Backups (SupermarketBoost)");
-                Backup("game-start");
+                // Dev test runs restart the game a lot: don't let them push real backups out.
+                if (!File.Exists(Path.Combine(Path.GetDirectoryName(typeof(SaveBackup).Assembly.Location) ?? "", "devharness")))
+                    Backup("game-start");
             }
             catch (Exception e)
             {

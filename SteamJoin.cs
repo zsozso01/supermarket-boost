@@ -16,21 +16,24 @@ namespace SupermarketBoost
     [HarmonyLib.HarmonyPatch]
     internal static class SteamJoin
     {
-        // The game's own invite handler only works from the main menu: if you are already in a store
-        // (even a solo one), it joins the lobby but never connects. Queue it and join from the menu instead.
+        // The game's own invite handler (SteamLobby, only alive inside a store) joins the Steam lobby but
+        // never connects. Handle invites ourselves: join through the main menu, queued if you are in a store.
         [HarmonyLib.HarmonyPrefix, HarmonyLib.HarmonyPatch(typeof(SteamLobby), "OnJoinRequest")]
-        private static bool OnInviteAccepted(GameLobbyJoinRequested_t callback)
+        private static bool SkipGameInviteHandler() => false;
+
+        private static void OnInviteAccepted(GameLobbyJoinRequested_t callback)
         {
             Plugin.Log.LogInfo($"Steam invite accepted for lobby {callback.m_steamIDLobby.m_SteamID} (in menu: {MainMenu.InMenu})");
-            if (MainMenu.InMenu) return true;
             _pendingLobby = callback.m_steamIDLobby.m_SteamID;
-            Plugin.Instance?.Toast("Invite accepted - save and quit to the main menu, you'll join automatically", 10f);
-            return false;
+            if (!MainMenu.InMenu)
+                Plugin.Instance?.Toast("Invite accepted - save and quit to the main menu, you'll join automatically", 10f);
         }
 
         private static Callback<GameRichPresenceJoinRequested_t> _rpJoin;
+        private static Callback<GameLobbyJoinRequested_t> _invite;
         private static ulong _pendingLobby;
         private static bool _initialized, _presenceSet;
+        private static float _nextJoinTry;
         private static float _nextPresence;
 
         public static void Tick(Plugin plugin)
@@ -39,13 +42,15 @@ namespace SupermarketBoost
             if (!_initialized) Init();
 
             // Join a lobby that Steam asked for, as soon as the main menu can take it.
-            if (_pendingLobby != 0 && MainMenu.InMenu && SteamLobby.Instance != null && Time.unscaledTime > 6f)
+            if (_pendingLobby != 0 && MainMenu.InMenu && Time.unscaledTime > 6f && Time.unscaledTime > _nextJoinTry)
             {
+                _nextJoinTry = Time.unscaledTime + 2f;
                 ulong id = _pendingLobby;
-                _pendingLobby = 0;
-                Plugin.Log.LogInfo($"Joining Steam lobby {id}");
-                plugin.Toast("Joining your friend...");
-                SteamLobby.Instance.JoinLobby(new CSteamID(id));
+                if (MainMenu.JoinLobby(id))
+                {
+                    _pendingLobby = 0;
+                    plugin.Toast("Joining your friend...");
+                }
             }
 
             if (Time.unscaledTime > _nextPresence)
@@ -66,6 +71,7 @@ namespace SupermarketBoost
         {
             _initialized = true;
             _rpJoin = Callback<GameRichPresenceJoinRequested_t>.Create(OnRichPresenceJoin);
+            _invite = Callback<GameLobbyJoinRequested_t>.Create(OnInviteAccepted);
 
             string[] args = Environment.GetCommandLineArgs();
             for (int i = 0; i < args.Length - 1; i++)

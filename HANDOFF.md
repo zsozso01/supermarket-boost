@@ -1,31 +1,35 @@
-# Supermarket Boost: handoff (2026-11-21)
+# Supermarket Boost: handoff (updated 2026-11-21, v1.7.0)
 
-BepInEx 5 mod for **Supermarket Together** (Unity 2023.2.22f1, Mono, Mirror networking, Steam/FizzySteamworks, PlayMaker UI).
-Repo: https://github.com/zsozso01/supermarket-boost (public). Current release **v1.6.0**, installed on this PC.
-The owner and a friend want to **play co-op today without issues**. Nothing since v1.5 has been verified in-game.
+## Testing in the real game (dev harness)
 
-## Goal of the next session
+- `DevHarness.cs` is compiled in but **off** unless an empty file `devharness` sits next to the installed DLL
+  (`BepInEx/plugins/SupermarketBoost/devharness`). Releases never ship it. With it: runInBackground on,
+  game-start save backups skipped, commands read from `BepInEx/sb_cmd.txt`, results as `[TEST] PASS/FAIL/INFO` in `LogOutput.log`.
+- `tools/devrun.sh`: quits the test game, installs the fresh build + marker, relaunches through Steam.
+  `tools/sbtest.sh "cmd" "cmd" ...`: sends commands and prints their `[TEST]` lines.
+- Run Steam itself on the vdesk display (`vdesk_launch("steam -silent -applaunch 2709570")`); later `steam -applaunch`
+  from a shell then opens the game there too. Shut Steam down afterwards (`steam -shutdown`) so the owner gets it back.
+- Commands: state, npcs, dumpui [filter], click <button path|text>, tree <path> [depth], fsm <path>[|fsmName], globals,
+  static Type.member, objects Type [field], continue, openstore, spawncustomer [thief] [n], tpnpc/look, shoot <netId|0> [n],
+  shootwall, broom <netId>, drift <netId|player>, speed <x>, cosmetics, give, holster, reload, ragdollplayer,
+  thirdperson on|off, thirdangle front|side|back, guncam side|left|rq|front|off [dist], grip/groll/curl/hold (pose tuning),
+  screenshot <file> (to `BepInEx/screens`), wait <s>, quit.
+- Gotcha: never `pkill -f sbtest.sh` (matches your own shell).
 
-1. **Test harness in the real game** (dev builds only, off in releases):
-   - Plugin listens on `127.0.0.1:<port>` (or watches a command file) for commands, e.g.
-     `state`, `dumpui` (active Canvas/Buttons with paths and texts), `continue`, `opendstore`,
-     `spawncustomer`, `shoot <netId> [n]`, `broom <netId>`, `speed <x>`, `cosmetics`, `screenshot <file>`,
-     `give pistol`, `ragdollplayer`. Each command logs a clear PASS/FAIL line to `BepInEx/LogOutput.log`.
-   - Set `Application.runInBackground = true` in dev mode (the game stalls when its window isn't focused).
-   - Scripted test runs (a shell/python driver) that launch the game, go menu → Continue → open store →
-     run every feature, assert on log lines, take screenshots, then quit.
-2. **Run the game on the `vdesk` virtual desktop** (enabled for this folder) so tests never take over the owner's screen.
-   Steam must be running for SteamAPI; the game has `steam_appid.txt` (2709570). Find how to launch the Proton
-   build onto the vdesk display (compatdata 2709570, Proton Experimental) instead of `steam://rungameid`.
-3. **UnityExplorer** (BepInEx 5 Mono build, from its official GitHub releases; ask the owner before downloading)
-   for live inspection of player/NPC rigs, the menu, the cosmetics room colliders.
-4. **Better gun model** (owner request). Options: a proper procedural mesh in code (beveled slide with serrations,
-   ejection port, barrel, rounded grip with texture, magazine base, sights, trigger), or a real model loaded as an
-   AssetBundle. AssetBundles must be built with **Unity 2023.2.x** (installed: 2022.3.29f1, 6000.3.6f1, 6000.6.7f1,
-   none match; installing 2023.2.22f1 via Unity Hub would be needed). Hold pose / IK grip points must be re-fit.
-5. Fix whatever the tests find, then release (see "Release").
+## Verified in game on 2026-11-21 (v1.7.0)
 
-## Must-verify list (all currently unverified)
+Continue (friends-only lobby, takes the newer autosave), native menu entries + Mod Menu, menu clutter hidden, store open,
+customer cap 1.4x, config migration, game-start backups, pistol equip as item 18 (synced, IK on grip, no broom nag),
+shots ragdoll NPCs, 2 shots knock out a shopper ("Knocked out" log), broom ragdoll, bodies stay on their root after getting up
+(was broken: interpolated kinematic rigidbodies), player ragdoll + get up upright with RigBuilder, reload, speed x2/x4
+(players walk/animate at normal speed), speed shown in the clock box, cosmetics room in/out with elephant hidden.
+
+## Still needs the friend (second Steam account)
+
+Join from menu (Join entry / Steam Join Game / invite), invite accepted while in a store, remote view of the pistol hold,
+shooting a friend, thief loot drop and 30 s body removal were not re-checked this round.
+
+## Original must-verify list
 
 - Main menu: Continue panel shows (bottom-left), Continue loads latest `StoreFileN.es3` as a friends-only lobby; "JOIN <friend>'s store" button.
 - Accepted Steam invite: joins (from menu; from inside a store → "save and quit", auto-join in menu). Needs the friend (second Steam account).

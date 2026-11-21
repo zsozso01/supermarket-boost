@@ -12,20 +12,173 @@ namespace SupermarketBoost
     internal class PistolModel : MonoBehaviour
     {
         public Transform Kick, Slide, Muzzle;
+        // Grip points for the hand IK (Kick-local). Tuned in game with the dev harness.
+        // Hand grip points (Kick-local): wrist position, and the direction the knuckles point.
+        // Two-handed "thumbs forward" grip: right hand high on the grip, left hand wrapping it from the left.
+        public static Vector3 RightIkPos = new Vector3(0.02f, 0.012f, -0.115f), RightKnuckles = new Vector3(0f, -0.31f, 0.95f);
+        public static Vector3 LeftIkPos = new Vector3(-0.032f, -0.015f, -0.09f), LeftKnuckles = new Vector3(0.1f, -0.31f, 0.95f);
+        public static Vector3 RightIkRot => GripRot(true, RightKnuckles).eulerAngles;
+        public static Vector3 LeftIkRot => GripRot(false, LeftKnuckles).eulerAngles;
+
+        /// <summary>
+        /// IK target rotation for a Bip01 hand (bone: knuckles along -X, palm side +Y) so the knuckles point
+        /// along <paramref name="knuckles"/> and the palm faces the grip (right hand) / the right hand (left).
+        /// </summary>
+        public static float RollR = 270f, RollL = 90f; // roll about the knuckle direction: fingers wrap down the grip
+
+        public static Quaternion GripRot(bool right, Vector3 knuckles)
+        {
+            var f = knuckles.normalized;
+            var extra = Quaternion.AngleAxis(right ? RollR : RollL, f);
+            var palm = right ? Quaternion.AngleAxis(90f, f) * Vector3.left
+                             : Quaternion.AngleAxis(-90f, f) * new Vector3(0.9f, 0.35f, 0f).normalized;
+            return extra * Quaternion.LookRotation(f, palm) * Quaternion.Inverse(Quaternion.LookRotation(Vector3.left, Vector3.up));
+        }
         private Light _flash;
         private GameObject _flashMesh;
         private float _flashUntil, _recoil, _slideBack;
 
-        private static Material _polymer, _steel, _flashMat;
+        private static Material _polymer, _steel, _flashMat, _grip, _barrel, _dark, _dot;
+        private static Mesh _slideMesh, _slideDark, _frameMesh, _gripMesh, _barrelMesh, _darkMesh, _dotMesh;
+
+        private static Texture2D StippleTexture()
+        {
+            const int n = 128;
+            var tex = new Texture2D(n, n, TextureFormat.RGBA32, true) { name = "SB_Stipple", wrapMode = TextureWrapMode.Repeat };
+            var rng = new System.Random(7);
+            var px = new Color[n * n];
+            for (int i = 0; i < px.Length; i++) px[i] = new Color(0.085f, 0.085f, 0.095f);
+            for (int k = 0; k < 900; k++) // raised stipple dots, lit from the top
+            {
+                int cx = rng.Next(n), cy = rng.Next(n);
+                for (int dy = -2; dy <= 2; dy++)
+                    for (int dx = -2; dx <= 2; dx++)
+                    {
+                        if (dx * dx + dy * dy > 4) continue;
+                        int x = (cx + dx + n) % n, y = (cy + dy + n) % n;
+                        float shade = 0.085f + 0.05f * (dy + 2) / 4f - 0.02f;
+                        px[y * n + x] = new Color(shade, shade, shade + 0.008f);
+                    }
+            }
+            tex.SetPixels(px);
+            tex.Apply(true);
+            return tex;
+        }
+
+        private static void BuildMeshes()
+        {
+            _polymer = GameHelpers.MakeMaterial(new Color(0.075f, 0.075f, 0.085f), 0.3f);
+            _steel = GameHelpers.MakeMaterial(new Color(0.2f, 0.205f, 0.215f), 0.6f);
+            _barrel = GameHelpers.MakeMaterial(new Color(0.42f, 0.42f, 0.44f), 0.85f);
+            _dark = GameHelpers.MakeMaterial(new Color(0.015f, 0.015f, 0.018f), 0.1f);
+            _dot = GameHelpers.MakeMaterial(new Color(0.85f, 1f, 0.75f), 0.2f, new Color(0.45f, 0.9f, 0.35f));
+            _flashMat = GameHelpers.MakeMaterial(new Color(1f, 0.8f, 0.3f), 0f, new Color(4f, 2.5f, 0.8f));
+            _grip = GameHelpers.MakeMaterial(Color.white, 0.15f);
+            var stipple = StippleTexture();
+            _grip.mainTexture = stipple;
+            if (_grip.HasProperty("_BaseMap")) _grip.SetTexture("_BaseMap", stipple);
+
+            // Coordinates: x right, y up, z forward (muzzle), metres. Bore axis at y = 0.023.
+            // Slide: beveled, slight taper at the nose.
+            var slide = new MeshKit().Extrude(new[]
+            {
+                new Vector2(-0.085f, 0.007f), new Vector2(0.099f, 0.007f), new Vector2(0.099f, 0.033f),
+                new Vector2(0.093f, 0.040f), new Vector2(-0.081f, 0.040f), new Vector2(-0.085f, 0.036f),
+            }, 0.0128f, 0.0032f);
+            // Rear sight (two ears with a notch) and front sight post.
+            slide.Box(new Vector3(-0.0105f, 0.039f, -0.081f), new Vector3(-0.0022f, 0.0465f, -0.071f), 0.0012f);
+            slide.Box(new Vector3(0.0022f, 0.039f, -0.081f), new Vector3(0.0105f, 0.0465f, -0.071f), 0.0012f);
+            slide.Box(new Vector3(-0.0018f, 0.039f, 0.084f), new Vector3(0.0018f, 0.0465f, 0.091f), 0.0008f);
+            // Slide stop lever (left).
+            slide.Box(new Vector3(-0.0142f, 0.003f, -0.012f), new Vector3(-0.0122f, 0.009f, 0.016f), 0.0008f);
+            _slideMesh = slide.ToMesh("SB_PistolSlide");
+
+            // Serrations, ejection port and muzzle bore: dark inlays on the slide.
+            var dark = new MeshKit();
+            for (int i = 0; i < 8; i++)
+            {
+                float z = -0.079f + i * 0.0036f;
+                foreach (float sx in new[] { -1f, 1f })
+                    dark.Box(new Vector3(sx > 0 ? 0.0126f : -0.0131f, 0.011f, z), new Vector3(sx > 0 ? 0.0131f : -0.0126f, 0.036f, z + 0.0016f), 0.0002f);
+            }
+            dark.Box(new Vector3(-0.004f, 0.0398f, 0.004f), new Vector3(0.0131f, 0.0406f, 0.042f), 0.0003f);   // port, top
+            dark.Box(new Vector3(0.0126f, 0.026f, 0.004f), new Vector3(0.0133f, 0.0402f, 0.042f), 0.0003f);    // port, side
+            dark.Disc(new Vector3(0f, 0.023f, 0.1012f), Vector3.forward, 0.0042f);                             // bore
+            _slideDark = dark.ToMesh("SB_PistolSlideDark");
+
+            // Frame: dust cover with rail, trigger guard and beavertail.
+            var frame = new MeshKit().Extrude(new[]
+            {
+                new Vector2(-0.094f, 0.003f), new Vector2(-0.084f, 0.009f), new Vector2(0.091f, 0.009f),
+                new Vector2(0.091f, -0.005f), new Vector2(0.085f, -0.011f), new Vector2(0.036f, -0.011f),
+                new Vector2(0.030f, -0.013f), new Vector2(-0.044f, -0.013f), new Vector2(-0.070f, -0.012f),
+                new Vector2(-0.088f, -0.004f),
+            }, 0.0118f, 0.0028f);
+            for (int i = 0; i < 3; i++) // rail slots
+            {
+                float z = 0.046f + i * 0.013f;
+                frame.Box(new Vector3(-0.0122f, -0.0105f, z), new Vector3(0.0122f, -0.0068f, z + 0.0045f), 0.0006f);
+            }
+            frame.Sweep(new[] // trigger guard
+            {
+                new Vector3(0f, -0.010f, 0.034f), new Vector3(0f, -0.022f, 0.037f), new Vector3(0f, -0.032f, 0.031f),
+                new Vector3(0f, -0.037f, 0.018f), new Vector3(0f, -0.037f, -0.004f), new Vector3(0f, -0.034f, -0.030f),
+                new Vector3(0f, -0.030f, -0.044f),
+            }, new[] { 0.0045f, 0.0045f, 0.0045f, 0.0045f, 0.0045f, 0.0045f, 0.0045f },
+               new[] { 0.0034f, 0.0034f, 0.0034f, 0.0034f, 0.0034f, 0.0034f, 0.0034f }, 3f, 12);
+            frame.Sweep(new[] // trigger blade
+            {
+                new Vector3(0f, -0.011f, 0.004f), new Vector3(0f, -0.017f, 0.007f), new Vector3(0f, -0.023f, 0.006f),
+                new Vector3(0f, -0.028f, 0.002f),
+            }, new[] { 0.0028f, 0.0028f, 0.0028f, 0.0024f }, new[] { 0.0018f, 0.0018f, 0.0018f, 0.0016f }, 3f, 10);
+            // Takedown lever.
+            frame.Box(new Vector3(-0.0128f, -0.003f, 0.022f), new Vector3(0.0128f, 0.0005f, 0.030f), 0.0006f);
+            // Magazine base plate.
+            Vector3 gTop = new Vector3(0f, -0.010f, -0.058f), gDir = new Vector3(0f, -0.95f, -0.31f).normalized;
+            Vector3 gBot = gTop + gDir * 0.085f;
+            frame.Sweep(new[] { gBot + gDir * 0.0005f, gBot + gDir * 0.0035f, gBot + gDir * 0.0075f },
+                new[] { 0.0142f, 0.0150f, 0.0144f }, new[] { 0.0270f, 0.0282f, 0.0270f }, 3.5f, 24);
+            _frameMesh = frame.ToMesh("SB_PistolFrame");
+
+            // Grip: rounded, with a palm swell, stippled.
+            var path = new Vector3[8];
+            var hx = new float[8];
+            var hn = new float[8];
+            for (int i = 0; i < 8; i++)
+            {
+                float t = i / 7f;
+                path[i] = gTop + gDir * (0.086f * t) + new Vector3(0f, 0f, 0.0015f * Mathf.Sin(t * Mathf.PI));
+                hx[i] = 0.0128f + 0.0016f * Mathf.Sin(t * Mathf.PI * 0.9f);
+                hn[i] = 0.0255f + 0.0012f * Mathf.Sin(t * Mathf.PI) - 0.001f * t;
+            }
+            _gripMesh = new MeshKit().Sweep(path, hx, hn, 3.2f, 28, true, 18f).ToMesh("SB_PistolGrip");
+
+            // Barrel crown and the barrel hood showing through the ejection port.
+            var barrel = new MeshKit().Cylinder(new Vector3(0f, 0.023f, 0f), 0.0062f, 0.090f, 0.1008f, 24);
+            barrel.Box(new Vector3(-0.0025f, 0.0407f, 0.008f), new Vector3(0.0105f, 0.0411f, 0.034f), 0.0003f);
+            _barrelMesh = barrel.ToMesh("SB_PistolBarrel");
+
+            // Three-dot sights.
+            var dots = new MeshKit();
+            dots.Disc(new Vector3(-0.0064f, 0.0438f, -0.0812f), Vector3.back, 0.0011f, 10);
+            dots.Disc(new Vector3(0.0064f, 0.0438f, -0.0812f), Vector3.back, 0.0011f, 10);
+            dots.Disc(new Vector3(0f, 0.0440f, 0.0838f), Vector3.back, 0.0011f, 10);
+            _dotMesh = dots.ToMesh("SB_PistolDots");
+        }
+
+        private static void Part(Transform parent, string name, Mesh mesh, Material mat)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var r = go.AddComponent<MeshRenderer>();
+            r.sharedMaterial = mat;
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+        }
 
         public static PistolModel Build(Transform parent, string name)
         {
-            if (_polymer == null)
-            {
-                _polymer = GameHelpers.MakeMaterial(new Color(0.07f, 0.07f, 0.08f), 0.25f);
-                _steel = GameHelpers.MakeMaterial(new Color(0.16f, 0.16f, 0.17f), 0.7f);
-                _flashMat = GameHelpers.MakeMaterial(new Color(1f, 0.8f, 0.3f), 0f, new Color(4f, 2.5f, 0.8f));
-            }
+            if (_slideMesh == null) BuildMeshes();
 
             var root = new GameObject(name);
             root.transform.SetParent(parent, false);
@@ -35,37 +188,35 @@ namespace SupermarketBoost
 
             m.Slide = new GameObject("Slide").transform;
             m.Slide.SetParent(m.Kick, false);
-            GameHelpers.Box(m.Slide, new Vector3(0f, 0.022f, 0.01f), new Vector3(0.028f, 0.032f, 0.18f), _steel);
-            GameHelpers.Box(m.Slide, new Vector3(0f, 0.041f, 0.09f), new Vector3(0.005f, 0.007f, 0.006f), _steel);  // front sight
-            GameHelpers.Box(m.Slide, new Vector3(0f, 0.041f, -0.07f), new Vector3(0.02f, 0.007f, 0.006f), _steel);  // rear sight
-            GameHelpers.Box(m.Kick, new Vector3(0f, -0.004f, 0.005f), new Vector3(0.026f, 0.022f, 0.165f), _polymer); // frame
-            var grip = GameHelpers.Box(m.Kick, new Vector3(0f, -0.058f, -0.058f), new Vector3(0.027f, 0.095f, 0.048f), _polymer);
-            grip.transform.localRotation = Quaternion.Euler(-16f, 0f, 0f);
-            GameHelpers.Box(m.Kick, new Vector3(0f, -0.03f, 0.012f), new Vector3(0.012f, 0.006f, 0.05f), _polymer);  // trigger guard
-            GameHelpers.Box(m.Kick, new Vector3(0f, -0.024f, -0.004f), new Vector3(0.006f, 0.018f, 0.006f), _steel); // trigger
+            Part(m.Slide, "SlideBody", _slideMesh, _steel);
+            Part(m.Slide, "SlideDetail", _slideDark, _dark);
+            Part(m.Slide, "Sights", _dotMesh, _dot);
+            Part(m.Kick, "Frame", _frameMesh, _polymer);
+            Part(m.Kick, "Grip", _gripMesh, _grip);
+            Part(m.Kick, "Barrel", _barrelMesh, _barrel);
 
             m.Muzzle = new GameObject("Muzzle").transform;
             m.Muzzle.SetParent(m.Kick, false);
-            m.Muzzle.localPosition = new Vector3(0f, 0.022f, 0.115f);
+            m.Muzzle.localPosition = new Vector3(0f, 0.023f, 0.104f);
             m._flash = m.Muzzle.gameObject.AddComponent<Light>();
             m._flash.type = LightType.Point;
             m._flash.color = new Color(1f, 0.75f, 0.35f);
             m._flash.range = 6f;
             m._flash.intensity = 6f;
             m._flash.enabled = false;
-            m._flashMesh = GameHelpers.Box(m.Muzzle, new Vector3(0f, 0f, 0.025f), new Vector3(0.05f, 0.05f, 0.06f), _flashMat);
+            m._flashMesh = GameHelpers.Box(m.Muzzle, new Vector3(0f, 0f, 0.022f), new Vector3(0.035f, 0.035f, 0.045f), _flashMat);
             m._flashMesh.transform.localRotation = Quaternion.Euler(0f, 0f, 45f);
             m._flashMesh.SetActive(false);
 
             // Grip points for the character's two-bone IK (right hand on the grip, left hand cupping it).
             var r = new GameObject("RightHandIK").transform;
             r.SetParent(m.Kick, false);
-            r.localPosition = new Vector3(0.012f, -0.055f, -0.06f);
-            r.localRotation = Quaternion.Euler(0f, 0f, -90f);
+            r.localPosition = RightIkPos;
+            r.localRotation = GripRot(true, RightKnuckles);
             var l = new GameObject("LeftHandIK").transform;
             l.SetParent(m.Kick, false);
-            l.localPosition = new Vector3(-0.03f, -0.07f, -0.045f);
-            l.localRotation = Quaternion.Euler(0f, 0f, 90f);
+            l.localPosition = LeftIkPos;
+            l.localRotation = GripRot(false, LeftKnuckles);
             return m;
         }
 
@@ -164,6 +315,21 @@ namespace SupermarketBoost
             var li = p.instantiatedOBJ.transform.Find("Kick/LeftHandIK");
             if (r && ri) { r.SetPositionAndRotation(ri.position, ri.rotation); if (rc) rc.weight = 1f; }
             if (l && li) { l.SetPositionAndRotation(li.position, li.rotation); if (lc) lc.weight = 1f; }
+            if (__instance.characterOBJ != null) __instance.characterOBJ.GetComponent<FingerCurl>()?.Mark();
+        }
+
+        // Fingers wrap the grip: added once per character, curls after the animator and IK have run.
+        [HarmonyPostfix, HarmonyPatch(typeof(PlayerNetwork), "Start")]
+        private static void AddCurl(PlayerNetwork __instance)
+        {
+            var sync = __instance.GetComponent<PlayerSyncCharacter>();
+            __instance.StartCoroutine(AttachCurl(sync));
+        }
+
+        private static IEnumerator AttachCurl(PlayerSyncCharacter sync)
+        {
+            while (sync != null && sync.characterOBJ == null) yield return null;
+            if (sync != null && sync.characterOBJ.GetComponent<FingerCurl>() == null) sync.characterOBJ.AddComponent<FingerCurl>();
         }
 
         // PlayerNetwork.Update prints "Equipped item error" every frame for items it doesn't know.
@@ -187,23 +353,68 @@ namespace SupermarketBoost
         private static bool NoBroomNag(string hash) => !(hash == "message14" && Holds(GameHelpers.LocalPlayer));
     }
 
+    /// <summary>Curls the Bip01 finger bones while the pistol is held (the game's rig has no grip pose).</summary>
+    [DefaultExecutionOrder(32000)]
+    internal class FingerCurl : MonoBehaviour
+    {
+        public static float Curl = 75f, ThumbCurl = 10f, Axis = 1f; // tuned in game
+        private readonly List<Transform> _fingers = new List<Transform>(), _thumbs = new List<Transform>();
+        private int _markedFrame = -10;
+
+        public void Mark() => _markedFrame = Time.frameCount;
+
+        private void Awake()
+        {
+            foreach (var t in GetComponentsInChildren<Transform>(true))
+            {
+                if (!t.name.StartsWith("Bip01 R Finger") && !t.name.StartsWith("Bip01 L Finger")) continue;
+                if (t.name.EndsWith("Nub")) continue;
+                if (t.name.Substring(13).StartsWith("Finger0")) _thumbs.Add(t); else _fingers.Add(t);
+            }
+        }
+
+        private Quaternion[] _base, _last;
+        private bool _curled;
+
+        // The animator may or may not write finger bones every frame: curl from the animated pose when it
+        // does, from the remembered pose when it doesn't, and put it back when the pistol is put away.
+        private void LateUpdate()
+        {
+            int n = _fingers.Count + _thumbs.Count;
+            if (_base == null) { _base = new Quaternion[n]; _last = new Quaternion[n]; }
+            bool hold = Time.frameCount - _markedFrame <= 1;
+            if (!hold && !_curled) return;
+            for (int i = 0; i < n; i++)
+            {
+                var t = i < _fingers.Count ? _fingers[i] : _thumbs[i - _fingers.Count];
+                var cur = t.localRotation;
+                if (!_curled || cur != _last[i]) _base[i] = cur; // fresh pose from the animator
+                if (!hold) { t.localRotation = _base[i]; continue; }
+                float a = i < _fingers.Count ? Curl : ThumbCurl;
+                t.localRotation = _last[i] = _base[i] * Quaternion.Euler(0f, 0f, -a * Axis);
+            }
+            _curled = hold;
+        }
+    }
+
     /// <summary>Positions the held pistol: in view for the owner, in the hands (aimed with the head) for others.</summary>
     internal class PistolHolder : MonoBehaviour
     {
         public PlayerNetwork Player;
         private PlayerSyncCharacter _sync;
         public static float ReloadPose; // 0..1, local player only
+        public static Vector3 HoldOffset = new Vector3(0.1f, 1.5f, 0.45f); // right, up, forward from the feet
 
         private void LateUpdate()
         {
             if (Player == null) return;
-            if (Player.isLocalPlayer)
+            if (Player.isLocalPlayer && !DevHarness.ForceThirdPerson)
             {
                 var cam = Camera.main;
                 if (cam == null) return;
                 var pose = Quaternion.Euler(Mathf.Sin(ReloadPose * Mathf.PI) * 55f, 0f, Mathf.Sin(ReloadPose * Mathf.PI) * 35f);
-                transform.position = cam.transform.TransformPoint(new Vector3(0.17f, -0.16f - 0.1f * Mathf.Sin(ReloadPose * Mathf.PI), 0.36f));
-                transform.rotation = cam.transform.rotation * Quaternion.Euler(0f, -3f, 0f) * pose;
+                transform.position = cam.transform.TransformPoint(new Vector3(0.13f, -0.1f - 0.1f * Mathf.Sin(ReloadPose * Mathf.PI), 0.33f));
+                transform.rotation = cam.transform.rotation * Quaternion.Euler(-1.5f, -4f, 0f) * pose;
                 return;
             }
 
@@ -211,7 +422,7 @@ namespace SupermarketBoost
             float pitch = _sync != null ? -_sync.headAngle : 0f; // headAngle is +up
             var body = Player.transform;
             var aim = Quaternion.AngleAxis(pitch, body.right) * body.forward;
-            transform.position = body.position + Vector3.up * 1.32f + body.right * 0.12f + aim * 0.42f;
+            transform.position = body.position + Vector3.up * HoldOffset.y + body.right * HoldOffset.x + aim * HoldOffset.z;
             transform.rotation = Quaternion.LookRotation(aim, Vector3.up);
         }
     }
@@ -281,9 +492,20 @@ namespace SupermarketBoost
                 if (Mag <= 0) { Click(); StartReload(plugin); return; }
                 _nextShot = Time.time + 0.16f;
                 Mag--;
-                Fire(cam, player);
+                Fire(cam, player, cam.transform.forward);
             }
         }
+
+        /// <summary>Test harness: fire one round from the camera at a point (uses the real shot path).</summary>
+        public static SbShotMsg DevFire(Vector3 target)
+        {
+            var cam = Camera.main;
+            var player = GameHelpers.LocalPlayer;
+            Mag--;
+            return Fire(cam, player, (target - cam.transform.position).normalized);
+        }
+
+        public static void DevReload() => StartReload(Plugin.Instance);
 
         private static void StartReload(Plugin plugin)
         {
@@ -308,7 +530,7 @@ namespace SupermarketBoost
             _audio.PlayOneShot(clip, vol * Plugin.PistolVolume.Value);
         }
 
-        private static void Fire(Camera cam, PlayerNetwork player)
+        private static SbShotMsg Fire(Camera cam, PlayerNetwork player, Vector3 dir)
         {
             var model = player.instantiatedOBJ != null ? player.instantiatedOBJ.GetComponent<PistolModel>() : null;
             model?.Fire();
@@ -316,10 +538,10 @@ namespace SupermarketBoost
             _audio.pitch = Random.Range(0.93f, 1.07f);
             _audio.PlayOneShot(ShotFx.Clip, Plugin.PistolVolume.Value);
 
-            var shot = Targeting.Trace(cam.transform.position, cam.transform.forward, Plugin.PistolRange.Value, player);
+            var shot = Targeting.Trace(cam.transform.position, dir, Plugin.PistolRange.Value, player);
             Vector3 muzzle = model != null ? model.Muzzle.position : cam.transform.position;
             ShotFx.Play(muzzle, shot.Point, shot.Normal, shot.Kind, spatial: false);
-            if (shot.Kind == HitKind.Npc || shot.Kind == HitKind.Player) Blood.Spray(shot.Point, cam.transform.forward);
+            if (shot.Kind == HitKind.Npc || shot.Kind == HitKind.Player) Blood.Spray(shot.Point, dir);
 
             if (Net.ServerHasMod) Net.SendShot(shot);
             else if (shot.Kind == HitKind.Npc && NetworkClient.spawned.TryGetValue(shot.Target, out var id) && id != null)
@@ -329,9 +551,10 @@ namespace SupermarketBoost
                 if (npc != null)
                 {
                     npc.CmdAnimationPlay(0);
-                    if (Plugin.Ragdolls.Value) Ragdoll.For(npc.gameObject).Hit(shot.Point, cam.transform.forward, 1f, false);
+                    if (Plugin.Ragdolls.Value) Ragdoll.For(npc.gameObject).Hit(shot.Point, dir, 1f, false);
                 }
             }
+            return shot;
         }
 
         public static void OnGUI(GUIStyle style)
@@ -347,7 +570,7 @@ namespace SupermarketBoost
 
             string ammo = Reloading ? "RELOADING..." :
                 $"{Mag} / {(Plugin.InfiniteReserve.Value ? "∞" : Reserve.ToString())}" + (Mag == 0 ? "   [R] reload" : "");
-            var r = new Rect(Screen.width - 260, Screen.height - 70, 240, 40);
+            var r = new Rect(Screen.width - 190, Screen.height - 64, 180, 40);
             GUI.color = Color.black;
             GUI.Label(new Rect(r.x + 2, r.y + 2, r.width, r.height), ammo, style);
             GUI.color = Mag == 0 && !Reloading ? new Color(1f, 0.4f, 0.3f) : Color.white;
@@ -381,13 +604,13 @@ namespace SupermarketBoost
             }
 
             foreach (var npc in Object.FindObjectsByType<NPC_Info>(FindObjectsSortMode.None))
-                if (RayHitsBody(origin, dir, BodyFeet(npc.gameObject), ref best, out var p))
+                if (HitsBody(npc.gameObject, origin, dir, ref best, out var p))
                 {
                     shot.Point = p; shot.Normal = -dir; shot.Kind = HitKind.Npc; shot.Target = npc.netId;
                 }
 
             foreach (var pl in Object.FindObjectsByType<PlayerNetwork>(FindObjectsSortMode.None))
-                if (pl != self && RayHitsBody(origin, dir, BodyFeet(pl.gameObject), ref best, out var p))
+                if (pl != self && HitsBody(pl.gameObject, origin, dir, ref best, out var p))
                 {
                     shot.Point = p; shot.Normal = -dir; shot.Kind = HitKind.Player; shot.Target = pl.netId;
                 }
@@ -395,12 +618,26 @@ namespace SupermarketBoost
             return shot;
         }
 
-        // While someone is ragdolled their body is not where their root is: aim at the body.
-        private static Vector3 BodyFeet(GameObject go)
+        // Standing people: a body-sized capsule. Ragdolled people lie somewhere else: test their limbs.
+        private static bool HitsBody(GameObject go, Vector3 o, Vector3 d, ref float best, out Vector3 point)
         {
+            point = default;
             var r = go.GetComponent<Ragdoll>();
-            if (r != null && r.IsDown && r.Pelvis != null) return r.Pelvis.position - Vector3.up * 0.9f;
-            return go.transform.position;
+            if (r == null || !r.IsDown || r.Colliders.Count == 0) return RayHitsBody(o, d, go.transform.position, ref best, out point);
+            bool hit = false;
+            var ray = new Ray(o, d);
+            foreach (var c in r.Colliders)
+            {
+                if (c == null) continue;
+                bool was = c.enabled;
+                c.enabled = true;
+                // Slightly generous: limbs are thin and lying on the floor.
+                if (c.Raycast(ray, out var h, best) && h.distance > 0.2f) { best = h.distance; point = h.point; hit = true; }
+                else if (c.bounds.IntersectRay(ray, out float t) && t > 0.2f && t < best && (c.ClosestPoint(o + d * t) - (o + d * t)).sqrMagnitude < 0.01f)
+                { best = t; point = o + d * t; hit = true; }
+                c.enabled = was;
+            }
+            return hit;
         }
 
         private static bool RayHitsBody(Vector3 o, Vector3 d, Vector3 feet, ref float best, out Vector3 point)

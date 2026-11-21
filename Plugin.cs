@@ -21,7 +21,7 @@ namespace SupermarketBoost
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "codescrambler.supermarkettogether.boost";
-        public const string Version = "1.6.0"; // keep in sync with <Version> in the .csproj
+        public const string Version = "1.7.0"; // keep in sync with <Version> in the .csproj
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
@@ -41,6 +41,7 @@ namespace SupermarketBoost
         internal static ConfigEntry<KeyboardShortcut> CosmeticsKey;
         internal static ConfigEntry<KeyboardShortcut> InviteKey;
         internal static ConfigEntry<bool> AutoContinueOnce;
+        internal static ConfigEntry<bool> CleanMainMenu;
         internal static ConfigEntry<bool> DiagnosticsOnce;
         internal static float[] Steps = { 1f, 2f, 4f };
 
@@ -111,6 +112,8 @@ namespace SupermarketBoost
                 "Teleports you to the cosmetics (skins & hats) room and back.");
             InviteKey = Config.Bind("Multiplayer", "InviteHotkey", new KeyboardShortcut(KeyCode.F7),
                 "Opens Steam's invite-friends dialog for your current game.");
+            CleanMainMenu = Config.Bind("Menu", "CleanMainMenu", true,
+                "Hides the news / DLC / Discord boxes on the main menu.");
             DiagnosticsOnce = Config.Bind("Debug", "DiagnosticsOnce", false,
                 "Testing aid: logs NPC skeletons and the cosmetics room location once in a game, then switches itself off.");
             AutoContinueOnce = Config.Bind("Debug", "AutoContinueOnce", false,
@@ -158,6 +161,7 @@ namespace SupermarketBoost
             }
 
             Pistol.Init();
+            DevHarness.Init(System.IO.Path.GetDirectoryName(Info.Location));
             new Harmony(Guid).PatchAll();
             Log.LogInfo($"Supermarket Boost v{Version} loaded");
 
@@ -181,11 +185,14 @@ namespace SupermarketBoost
             if (SpeedKey.Value.IsDown()) Toast(DaySpeed.Cycle());
             if (CosmeticsKey.Value.IsDown() && GameData.Instance != null) Toast(Cosmetics.Toggle());
             DaySpeed.Tick(this);
+            HudSpeed.Tick();
             Pistol.Tick(this);
             MainMenu.Tick(this);
+            MenuUi.Tick();
             SteamJoin.Tick(this);
             Diagnostics.Tick();
             Cosmetics.Tick();
+            DevHarness.Tick(this);
         }
 
         internal void Toast(string msg, float seconds = 2.5f)
@@ -204,9 +211,12 @@ namespace SupermarketBoost
 
             string text = null;
             if (Time.unscaledTime < _toastUntil) text = _toast;
-            else if (DaySpeed.Speed > 1f && GameData.Instance != null && GameData.Instance.isSupermarketOpen)
-                text = $"Game speed x{DaySpeed.Speed:0.#}";
-            if (text != null) Shadowed(new Rect(20, 20, 900, 40), text, Color.yellow);
+            // Top centre, clear of the game's HUD (the speed itself sits under the clock).
+            if (text != null)
+            {
+                var size = _style.CalcSize(new GUIContent(text));
+                Shadowed(new Rect((Screen.width - size.x) / 2f, Screen.height * 0.16f, size.x + 4, 40), text, Color.yellow);
+            }
 
             Pistol.OnGUI(_style);
         }

@@ -62,6 +62,7 @@ namespace SupermarketBoost
         public bool IsDown => _state == State.Down;
         public bool KnockedOut => _ko;
         public Transform Pelvis => _bones.Count > 0 ? _bones[0] : null;
+        public IReadOnlyList<Collider> Colliders => _cols;
 
         public static Ragdoll For(GameObject root)
         {
@@ -145,7 +146,7 @@ namespace SupermarketBoost
             foreach (var rb in _bodies)
             {
                 rb.isKinematic = true;
-                rb.interpolation = RigidbodyInterpolation.Interpolate;
+                rb.interpolation = RigidbodyInterpolation.None; // only while simulated, see Begin / Recover
                 rb.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
                 rb.solverIterations = 12;
                 rb.maxDepenetrationVelocity = 3f;
@@ -346,7 +347,7 @@ namespace SupermarketBoost
             if (_anim) _anim.enabled = false;
             foreach (var s in _skins) if (s) s.updateWhenOffscreen = true;
             foreach (var c in _cols) c.enabled = true;
-            foreach (var rb in _bodies) rb.isKinematic = false;
+            foreach (var rb in _bodies) { rb.isKinematic = false; rb.interpolation = RigidbodyInterpolation.Interpolate; }
             foreach (var rb in _bodies) { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; }
             _pinnedRoot = transform.position;
 
@@ -430,7 +431,9 @@ namespace SupermarketBoost
             }
             Vector3 landed = _bones[0].position;
 
-            foreach (var rb in _bodies) rb.isKinematic = true;
+            // An interpolated kinematic body keeps writing its last simulated pose into the bone every frame,
+            // which left the model lying where it fell while the NPC walked on. Bones follow the animation again.
+            foreach (var rb in _bodies) { rb.interpolation = RigidbodyInterpolation.None; rb.isKinematic = true; }
             foreach (var c in _cols) c.enabled = false;
             if (_anim)
             {
