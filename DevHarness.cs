@@ -28,7 +28,7 @@ namespace SupermarketBoost
         private static readonly Queue<string> Pending = new Queue<string>();
         private static bool _busy;
         private static Camera _thirdCam;
-        public static bool ForceThirdPerson;
+        public static bool ForceThirdPerson, NoRenderHook;
 
         public static void Init(string pluginDir)
         {
@@ -127,6 +127,8 @@ namespace SupermarketBoost
                 case "iroll": IRoll(a[0], P(a[1])); return null;
                 case "drift": Drift(a[0]); return null;
                 case "grip": Grip(a); return null;
+                case "gunjitter": return GunJitter();
+                case "renderhook": NoRenderHook = a[0] == "off"; Info($"render hook {(NoRenderHook ? "off" : "on")}"); return null;
                 case "groll":
                     PistolModel.RollR = P(a[0]); PistolModel.RollL = P(a[1]);
                     Grip(new[] { "r", F(PistolModel.RightIkPos.x), F(PistolModel.RightIkPos.y), F(PistolModel.RightIkPos.z), F(PistolModel.RightKnuckles.x), F(PistolModel.RightKnuckles.y), F(PistolModel.RightKnuckles.z) });
@@ -782,6 +784,30 @@ namespace SupermarketBoost
             float h = pelvis.position.y - go.transform.position.y;
             Check(!rag.IsDown && d.magnitude < 0.35f && h > 0.6f && h < 1.3f,
                 $"{who} body on its root after getting up (horizontal {d.magnitude:0.00} m, pelvis height {h:0.00} m, down={rag.IsDown})");
+        }
+
+        /// <summary>Walk and turn for 2 s; at the end of every frame the held gun must sit at the same place on screen.</summary>
+        private static IEnumerator GunJitter()
+        {
+            var p = GameHelpers.LocalPlayer;
+            var gun = p && p.instantiatedOBJ ? p.instantiatedOBJ.transform : null;
+            if (gun == null) { Fail("gunjitter: no gun held"); yield break; }
+            var ccc = UnityEngine.Object.FindAnyObjectByType<CustomCameraController>();
+            var t = ccc ? Traverse.Create(ccc).Field("x") : null;
+            Vector3 first = default; bool have = false; float worst = 0f;
+            float end = Time.realtimeSinceStartup + 2f;
+            while (Time.realtimeSinceStartup < end)
+            {
+                Move = new Vector2(0.6f, 1f);
+                if (t != null) t.SetValue(t.GetValue<float>() + 150f * Time.unscaledDeltaTime);
+                yield return new WaitForEndOfFrame();
+                var cam = Camera.main;
+                var v = cam.transform.InverseTransformPoint(gun.position);
+                if (!have) { first = v; have = true; }
+                worst = Mathf.Max(worst, (v - first).magnitude);
+            }
+            Move = Vector2.zero;
+            Check(worst < 0.01f, $"held gun stays put in view while walking and turning (worst offset {worst * 100f:0.0} cm)");
         }
 
         /// <summary>grip r|l px py pz kx ky kz : wrist position and knuckle direction of one hand.</summary>

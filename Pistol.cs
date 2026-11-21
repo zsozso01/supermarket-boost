@@ -405,16 +405,40 @@ namespace SupermarketBoost
         public static float ReloadPose; // 0..1, local player only
         public static Vector3 HoldOffset = new Vector3(0.1f, 1.5f, 0.45f); // right, up, forward from the feet
 
+        private static PistolHolder _local;
+        private static bool _hooked;
+
+        private bool InView => Player != null && Player.isLocalPlayer && !DevHarness.ForceThirdPerson;
+
+        private void OnEnable()
+        {
+            if (_hooked) return;
+            _hooked = true;
+            // The game's camera controller and Cinemachine move the camera late in the frame, after this
+            // script's LateUpdate: a gun placed there trails the camera by a frame and jumps around while
+            // walking or turning. Place it again right before the camera renders, from its final pose.
+            UnityEngine.Rendering.RenderPipelineManager.beginCameraRendering += (ctx, cam) =>
+            {
+                if (_local != null && _local.InView && cam == Camera.main && !DevHarness.NoRenderHook) _local.PlaceInView(cam);
+            };
+        }
+
+        public void PlaceInView(Camera cam)
+        {
+            var pose = Quaternion.Euler(Mathf.Sin(ReloadPose * Mathf.PI) * 55f, 0f, Mathf.Sin(ReloadPose * Mathf.PI) * 35f);
+            transform.SetPositionAndRotation(
+                cam.transform.TransformPoint(new Vector3(0.13f, -0.1f - 0.1f * Mathf.Sin(ReloadPose * Mathf.PI), 0.33f)),
+                cam.transform.rotation * Quaternion.Euler(-1.5f, -4f, 0f) * pose);
+        }
+
         private void LateUpdate()
         {
             if (Player == null) return;
-            if (Player.isLocalPlayer && !DevHarness.ForceThirdPerson)
+            if (InView)
             {
+                _local = this;
                 var cam = Camera.main;
-                if (cam == null) return;
-                var pose = Quaternion.Euler(Mathf.Sin(ReloadPose * Mathf.PI) * 55f, 0f, Mathf.Sin(ReloadPose * Mathf.PI) * 35f);
-                transform.position = cam.transform.TransformPoint(new Vector3(0.13f, -0.1f - 0.1f * Mathf.Sin(ReloadPose * Mathf.PI), 0.33f));
-                transform.rotation = cam.transform.rotation * Quaternion.Euler(-1.5f, -4f, 0f) * pose;
+                if (cam != null) PlaceInView(cam);
                 return;
             }
 

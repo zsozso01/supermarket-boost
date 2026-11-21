@@ -21,7 +21,7 @@ namespace SupermarketBoost
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "codescrambler.supermarkettogether.boost";
-        public const string Version = "1.7.0"; // keep in sync with <Version> in the .csproj
+        public const string Version = "1.7.1"; // keep in sync with <Version> in the .csproj
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
